@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Freezia TTS Speech</title>
+  <link rel="stylesheet" href="./app.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+<svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="i-overview" viewBox="0 0 24 24"><path d="M3 12h4l2.5-7 5 14 2.5-7h4"/></symbol>
+  <symbol id="i-profiles" viewBox="0 0 24 24"><path d="M4 6.5h9M17 6.5h3M4 12h3M11 12h9M4 17.5h11M19 17.5h1"/><circle cx="15" cy="6.5" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17.5" r="2"/></symbol>
+  <symbol id="i-sessions" viewBox="0 0 24 24"><path d="M20 14.5a2 2 0 0 1-2 2H9l-4.5 3.5V6a2 2 0 0 1 2-2H18a2 2 0 0 1 2 2z"/><path d="M8.5 9h7M8.5 12h4.5"/></symbol>
+  <symbol id="i-lab" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M18.5 11a6.5 6.5 0 0 1-13 0M12 17.5V21M8.5 21h7"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19.5 10.5A7.7 7.7 0 0 0 6 7L4 9M4 4.5V9h4.5M4.5 13.5A7.7 7.7 0 0 0 18 17l2-2M20 19.5V15h-4.5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l8.5 15h-17z"/><path d="M12 10v4M12 16.8v.2"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.5 5.5v13M15.5 5.5v13" stroke-width="3"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M10 11v6M14 11v6M6.5 7l.8 12.5h9.4L17.5 7M9.5 7V4.5h5V7"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 4l2.4 5 5.4.7-4 3.8 1 5.4L12 16.3l-4.8 2.6 1-5.4-4-3.8L9.6 9z"/></symbol>
+  <symbol id="i-wave" viewBox="0 0 24 24"><path d="M4 10.5v3M8 7.5v9M12 4.5v15M16 8.5v7M20 10.5v3"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M4.5 11.5L20 4.5l-6.5 15.5-2.6-6z"/><path d="M10.9 14L20 4.5"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4.5 5.5h15l-5.8 7v5.5l-3.4 1.5v-7z"/></symbol>
+  <symbol id="i-gate" viewBox="0 0 24 24"><path d="M12 3.5l7.5 3v5.2c0 4.3-3.1 7.6-7.5 8.8-4.4-1.2-7.5-4.5-7.5-8.8V6.5z"/><path d="M8.8 12l2.2 2.2 4.3-4.4"/></symbol>
+  <symbol id="i-message" viewBox="0 0 24 24"><path d="M5 5.5h14v10H10l-5 4z"/></symbol>
+  <symbol id="i-dice" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="15" rx="3.5"/><path d="M9 9h.01M15 15h.01M15 9h.01M9 15h.01M12 12h.01" stroke-width="2.6"/></symbol>
+  <symbol id="i-skip" viewBox="0 0 24 24"><path d="M5 12h10M11 7.5l4.5 4.5-4.5 4.5M19 6.5v11"/></symbol>
+  <symbol id="i-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2" fill="currentColor"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M15.5 9.2a4 4 0 0 1 0 5.6M18 6.8a7.5 7.5 0 0 1 0 10.4"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h13.5M13 6.5l5.5 5.5-5.5 5.5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4.5v10.5M7.5 10.5l4.5 4.5 4.5-4.5M5 19.5h14"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 6.5L4.5 11 9 15.5"/><path d="M4.5 11h9.5a5 5 0 0 1 0 10h-2"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5l1.8 5.2 5.2 1.8-5.2 1.8L12 17.5l-1.8-5.2L5 10.5l5.2-1.8z"/><path d="M18.5 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/></symbol>
+</svg>
+
+<div class="app" id="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+      <div class="brand-text"><strong>Freezia</strong><small>TTS Speech</small></div>
+    </div>
+    <nav class="nav" aria-label="功能导航">
+      <button class="nav-item active" data-panel="overview" type="button"><svg class="i"><use href="#i-overview"/></svg><span>总览</span><i class="badge-dot" id="nav-alert" hidden></i></button>
+      <button class="nav-item" data-panel="profiles" type="button"><svg class="i"><use href="#i-profiles"/></svg><span>发声档案</span></button>
+      <button class="nav-item" data-panel="sessions" type="button"><svg class="i"><use href="#i-sessions"/></svg><span>会话与全局</span></button>
+      <button class="nav-item" data-panel="lab" type="button"><svg class="i"><use href="#i-lab"/></svg><span>过滤与试听</span></button>
+    </nav>
+    <div class="sidebar-foot">
+      <label class="master" title="语音回复总开关">
+        <span><strong>语音回复</strong><small id="master-sub">读取中…</small></span>
+        <span class="switch"><input type="checkbox" id="master-switch" role="switch" aria-label="语音回复总开关"><span class="track"></span></span>
+      </label>
+      <div class="conn"><span class="dot" id="conn-dot"></span><span id="conn-label">连接中…</span><span class="ver" id="version"></span></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div><h1 id="panel-title">总览</h1><p id="panel-sub">语音回复的运行状态与最近的判定</p></div>
+      <button class="icon-btn" id="refresh" type="button" title="刷新" aria-label="刷新"><svg class="i"><use href="#i-refresh"/></svg></button>
+    </header>
+    <div class="issue-strip" id="issue-strip" hidden></div>
+
+    <!-- 总览 -->
+    <section class="panel" data-panel="overview">
+      <article class="card hero" id="hero">
+        <div class="hero-main">
+          <span class="status-chip off" id="hero-chip">读取中</span>
+          <h2 id="hero-title"><span class="skeleton">正在读取状态</span></h2>
+          <p id="hero-text">&nbsp;</p>
+          <div class="hero-actions">
+            <button class="btn primary" type="button" data-goto="lab"><svg class="i"><use href="#i-play"/></svg>去试听</button>
+            <button class="btn ghost" type="button" data-goto="profiles"><svg class="i"><use href="#i-profiles"/></svg>调整档案</button>
+          </div>
+        </div>
+        <div class="hero-wave" id="hero-wave" aria-hidden="true"></div>
+      </article>
+
+      <div class="kpis">
+        <article class="kpi"><div class="kpi-icon"><svg class="i"><use href="#i-message"/></svg></div><div><span>经过判定</span><strong id="k-decided">—</strong><small id="k-decided-sub">本次启动以来</small></div></article>
+        <article class="kpi"><div class="kpi-icon"><svg class="i"><use href="#i-volume"/></svg></div><div><span>出声率</span><strong id="k-rate">—</strong><small id="k-rate-sub">&nbsp;</small></div></article>
+        <article class="kpi"><div class="kpi-icon"><svg class="i"><use href="#i-clock"/></svg></div><div><span>平均合成耗时</span><strong id="k-latency">—</strong><small id="k-latency-sub">&nbsp;</small></div></article>
+        <article class="kpi"><div class="kpi-icon"><svg class="i"><use href="#i-alert"/></svg></div><div><span>失败</span><strong id="k-failed">—</strong><small id="k-failed-sub">&nbsp;</small></div></article>
+      </div>
+
+      <div class="grid-2">
+        <article class="card">
+          <header class="card-head"><div><h3>运行检查</h3><p class="muted small">确认插件能正常接管语音回复</p></div></header>
+          <ul class="checks" id="checks"></ul>
+        </article>
+        <article class="card">
+          <header class="card-head"><div><h3>语音流水线</h3><p class="muted small" id="queue-label">本次启动以来</p></div></header>
+          <div class="pipeline" id="pipeline"></div>
+          <div class="pipe-foot" id="pipe-foot"></div>
+        </article>
+      </div>
+
+      <article class="card">
+        <header class="card-head">
+          <div><h3>最近判定</h3><p class="muted small">最多保留 100 条，重启后清空</p></div>
+          <div class="seg small" id="event-filter" role="tablist" aria-label="筛选判定记录">
+            <button type="button" class="active" data-filter="all">全部</button>
+            <button type="button" data-filter="sent">已发送</button>
+            <button type="button" data-filter="skipped">跳过</button>
+            <button type="button" data-filter="failed">失败</button>
+          </div>
+        </header>
+        <ol class="timeline" id="events"></ol>
+        <div class="empty" id="events-empty" hidden>
+          <div class="empty-art" aria-hidden="true"><span style="height:12px"></span><span style="height:22px"></span><span style="height:34px"></span><span style="height:18px"></span><span style="height:26px"></span><span style="height:10px"></span></div>
+          <p id="events-empty-title">还没有回复经过插件</p>
+          <small id="events-empty-text">先到「过滤与试听」看看一条回复会怎样被念出来。</small>
+        </div>
+      </article>
+    </section>
+
+    <!-- 发声档案 -->
+    <section class="panel" data-panel="profiles" hidden>
+      <div class="profiles-layout">
+        <div class="profile-rail">
+          <div class="rail-head"><h3>档案</h3><span class="muted small" id="profile-count"></span></div>
+          <ul class="profile-cards" id="profile-list"></ul>
+          <button class="add-card" id="new-profile" type="button"><svg class="i"><use href="#i-plus"/></svg>新建档案</button>
+        </div>
+
+        <form class="card editor" id="profile-form" novalidate autocomplete="off">
+          <header class="editor-head">
+            <div><p class="eyebrow" id="profile-eyebrow">编辑档案</p><h2 id="profile-title">—</h2></div>
+            <div class="editor-tools">
+              <button type="button" class="btn ghost small" id="try-profile"><svg class="i"><use href="#i-play"/></svg>用它试听</button>
+              <button type="button" class="btn ghost small" id="set-default"><svg class="i"><use href="#i-star"/></svg>设为默认</button>
+              <button type="button" class="btn danger-ghost small" id="delete-profile"><svg class="i"><use href="#i-trash"/></svg><span>删除</span></button>
+            </div>
+          </header>
+
+          <fieldset class="section">
+            <legend>基本</legend>
+            <div class="fields two">
+              <label class="field"><span class="label">档案名</span><input name="name" maxlength="32" required><small class="help">中文、字母、数字、下划线或短横线，最多 32 字</small></label>
+              <label class="field"><span class="label">TTS 服务</span><select name="tts_provider_id"></select><small class="help">不同档案可以用不同音色的服务</small></label>
+            </div>
+            <label class="toggle-row"><span><strong>启用这个档案</strong><small>关闭后，使用该档案的会话不会发声</small></span><span class="switch"><input type="checkbox" name="enabled" role="switch"><span class="track"></span></span></label>
+          </fieldset>
+
+          <fieldset class="section">
+            <legend>被动触发</legend>
+            <div class="prob">
+              <div class="prob-head"><span class="label">触发概率</span><output id="prob-out">—</output></div>
+              <input type="range" name="probability" min="0" max="1" step="0.05" aria-label="触发概率">
+              <div class="ticks"><span>0</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>
+              <small class="help" id="prob-help">&nbsp;</small>
+            </div>
+            <div class="fields two">
+              <label class="field"><span class="label">被动字数上限</span><span class="input-unit"><input type="number" name="max_chars" min="1" max="2000"><em>字</em></span><small class="help">过滤后超过就不参与概率触发；强制出声不受限制</small></label>
+              <label class="field"><span class="label">冷却时间</span><span class="input-unit"><input type="number" name="cooldown" min="0" max="86400"><em>秒</em></span><small class="help">同一会话两次发声的最小间隔，0 为不限制</small></label>
+            </div>
+            <div class="field"><span class="label">允许被动触发的聊天</span>
+              <div class="chip-toggles">
+                <label class="chip-toggle"><input type="checkbox" name="allow_private"><span>私聊</span></label>
+                <label class="chip-toggle"><input type="checkbox" name="allow_group"><span>群聊</span></label>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="section">
+            <legend>发送</legend>
+            <div class="seg-cards" role="radiogroup" aria-label="发送方式">
+              <label class="seg-card"><input type="radio" name="send_mode" value="both"><span><strong><svg class="i"><use href="#i-message"/></svg>文字 + 语音</strong><small>文字立即发出，语音合成好后补发</small></span></label>
+              <label class="seg-card"><input type="radio" name="send_mode" value="voice_only"><span><strong><svg class="i"><use href="#i-volume"/></svg>仅语音</strong><small>合成成功后替换文字，失败时照常发文字</small></span></label>
+              <label class="seg-card"><input type="radio" name="send_mode" value="text_only"><span><strong><svg class="i"><use href="#i-mute"/></svg>仅文字</strong><small>使用这个档案的会话不发声</small></span></label>
+            </div>
+            <label class="toggle-row"><span><strong>群聊里「仅语音」改为文字 + 语音</strong><small>只发语音容易让群友以为没有回应</small></span><span class="switch"><input type="checkbox" name="group_force_both" role="switch"><span class="track"></span></span></label>
+            <div class="field"><span class="label">文本过滤</span>
+              <div class="seg" role="radiogroup" aria-label="文本过滤">
+                <label><input type="radio" name="filter_mode" value="regex"><span>正则剥离（推荐）</span></label>
+                <label><input type="radio" name="filter_mode" value="off"><span>不过滤</span></label>
+              </div>
+              <small class="help">正则剥离会去掉动作描写、括号注释、markdown、链接、表情和颜文字</small>
+            </div>
+          </fieldset>
+
+          <fieldset class="section">
+            <legend>指令短语</legend>
+            <div class="field"><span class="label">强制出声</span><div class="tags good" data-tags="force_phrases"></div><small class="help">用户消息里出现任意一个，就无视字数上限、冷却和概率念出来。回车添加</small></div>
+            <div class="field"><span class="label">不出声</span><div class="tags bad" data-tags="mute_phrases"></div><small class="help">优先于强制出声判定，本次只发文字</small></div>
+          </fieldset>
+
+          <footer class="savebar" id="profile-savebar">
+            <span class="dirty-note">所有修改已保存</span>
+            <button type="button" class="btn ghost reset" id="profile-reset"><svg class="i"><use href="#i-undo"/></svg>还原</button>
+            <button type="submit" class="btn primary">保存档案</button>
+          </footer>
+        </form>
+      </div>
+    </section>
+
+    <!-- 会话与全局 -->
+    <section class="panel" data-panel="sessions" hidden>
+      <form class="card" id="global-form" novalidate autocomplete="off">
+        <header class="card-head"><div><h3>全局设置</h3><p class="muted small">对所有档案生效</p></div></header>
+        <div class="fields two">
+          <label class="field"><span class="label">默认 TTS 服务</span><select name="tts_provider_id"></select><small class="help">列表来自 AstrBot 中已添加的 TTS 服务提供商</small></label>
+          <label class="field"><span class="label">默认档案</span><select name="default_profile"></select><small class="help">没有单独指定档案的会话使用它</small></label>
+          <label class="field"><span class="label">单次合成超时</span><span class="input-unit"><input type="number" name="synth_timeout" min="2" max="120" step="1"><em>秒</em></span><small class="help">超过这个时间放弃语音，只发文字</small></label>
+          <label class="field"><span class="label">排队过期</span><span class="input-unit"><input type="number" name="queue_expire" min="1" max="120" step="1"><em>秒</em></span><small class="help">排队超过这个时间还没开始合成就丢弃</small></label>
+        </div>
+        <div style="margin-top: 16px">
+          <label class="toggle-row"><span><strong>通过 AstrBot 文件服务发送语音</strong><small>AstrBot 和协议端（如 NapCat）不在同一台机器或容器时开启，需要先在 AstrBot 设置 callback_api_base</small></span><span class="switch"><input type="checkbox" name="use_file_service" role="switch"><span class="track"></span></span></label>
+          <label class="toggle-row"><span><strong>调试日志</strong><small>在 AstrBot 日志里记录每次判定的结果</small></span><span class="switch"><input type="checkbox" name="debug" role="switch"><span class="track"></span></span></label>
+        </div>
+        <footer class="savebar" id="global-savebar">
+          <span class="dirty-note">所有修改已保存</span>
+          <button type="button" class="btn ghost reset" id="global-reset"><svg class="i"><use href="#i-undo"/></svg>还原</button>
+          <button type="submit" class="btn primary">保存全局设置</button>
+        </footer>
+      </form>
+
+      <article class="card">
+        <header class="card-head">
+          <div><h3>会话档案</h3><p class="muted small">给指定会话单独分配档案。会话 ID 可在对应会话发送 <code>/ftts status</code> 查看。</p></div>
+          <button class="btn ghost small" id="add-mapping" type="button"><svg class="i"><use href="#i-plus"/></svg>添加会话</button>
+        </header>
+        <div class="map-list" id="mapping-list"></div>
+        <footer class="savebar" id="mapping-savebar">
+          <span class="dirty-note">所有修改已保存</span>
+          <button type="button" class="btn ghost reset" id="mapping-reset"><svg class="i"><use href="#i-undo"/></svg>还原</button>
+          <button type="button" class="btn primary" id="save-mapping">保存会话档案</button>
+        </footer>
+      </article>
+
+      <article class="card">
+        <header class="card-head"><div><h3>静音会话</h3><p class="muted small">管理员在会话里发送 <code>/ftts off</code> 静音、<code>/ftts on</code> 恢复，也可以在这里恢复。</p></div></header>
+        <div class="muted-list" id="muted-list"></div>
+      </article>
+    </section>
+
+    <!-- 过滤与试听 -->
+    <section class="panel" data-panel="lab" hidden>
+      <div class="lab">
+        <form class="card lab-input" id="lab-form" novalidate autocomplete="off">
+          <header class="card-head"><h3>输入</h3><span class="kbd"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> 预览</span></header>
+          <div class="samples" id="samples" aria-label="示例文本"></div>
+          <label class="field"><span class="label">角色回复</span><textarea name="text" rows="7" placeholder="粘贴一条角色回复，例如：*轻轻拉了拉你的袖子* 你回来啦～"></textarea></label>
+          <label class="field"><span class="label">用户消息<em>可选</em></span><input name="user_text" placeholder="用来测试强制出声 / 不出声短语"></label>
+          <div class="fields two">
+            <label class="field"><span class="label">档案</span><select name="profile"></select></label>
+            <div class="field"><span class="label">场景</span>
+              <div class="seg" role="radiogroup" aria-label="场景">
+                <label><input type="radio" name="scene" value="private" checked><span>私聊</span></label>
+                <label><input type="radio" name="scene" value="group"><span>群聊</span></label>
+              </div>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn ghost" type="submit"><svg class="i"><use href="#i-filter"/></svg>预览判定</button>
+            <button class="btn primary" type="button" id="synth-btn"><svg class="i"><use href="#i-play"/></svg>合成试听</button>
+          </div>
+        </form>
+
+        <div class="lab-output">
+          <article class="card" id="verdict-card">
+            <div class="placeholder" id="lab-placeholder">
+              <div class="ph-art" aria-hidden="true"><span style="height:14px"></span><span style="height:30px"></span><span style="height:48px"></span><span style="height:24px"></span><span style="height:38px"></span><span style="height:18px"></span><span style="height:10px"></span></div>
+              <p>输入一条回复，看看它会怎样被念出来</p>
+              <small>会显示删掉了哪些内容、判定停在哪一步，还可以直接试听</small>
+            </div>
+            <div class="verdict" id="verdict" hidden>
+              <div class="verdict-icon" id="verdict-icon"></div>
+              <div><h3 id="verdict-title"></h3><p id="verdict-reason"></p></div>
+              <span class="pill accent" id="verdict-mode"></span>
+            </div>
+          </article>
+
+          <article class="card" id="filter-card" hidden>
+            <header class="card-head"><h3>过滤结果</h3><div class="legend"><span class="lg-del">删除</span><span class="lg-add">补充停顿</span></div></header>
+            <div class="diff" id="diff"></div>
+            <div class="spoken" id="spoken-box"><span class="spoken-label">实际朗读</span><p id="spoken"></p></div>
+            <div class="meter" id="meter"><div class="meter-bar"><span id="meter-fill"></span></div><small id="meter-label"></small></div>
+          </article>
+
+          <article class="card" id="trace-card" hidden>
+            <header class="card-head"><div><h3>判定路径</h3><p class="muted small">按顺序检查，第一个拦下或决定出声的步骤给出结论</p></div></header>
+            <ol class="trace" id="trace"></ol>
+          </article>
+
+          <article class="card" id="player-card" hidden>
+            <header class="card-head"><h3>试听</h3><a class="btn ghost small" id="download" download="freezia-preview.wav"><svg class="i"><use href="#i-download"/></svg>下载</a></header>
+            <div class="player">
+              <button class="play-btn" id="play-btn" type="button" aria-label="播放"><svg class="i"><use href="#i-play"/></svg></button>
+              <div class="wave-wrap" id="wave-wrap" title="点击跳转"><canvas id="wave"></canvas></div>
+              <span class="time" id="play-time">0:00 / 0:00</span>
+            </div>
+            <div class="player-meta" id="player-meta"></div>
+            <audio id="audio" preload="auto"></audio>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+</body>
+</html>

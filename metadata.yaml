@@ -1,0 +1,16 @@
+name: astrbot_plugin_Freezia_TTS_Speech
+display_name: Freezia TTS Speech
+short_desc: 让角色在合适的时机开口：按档案决定是否发声，清洗文本后交给 AstrBot 的 TTS 服务合成
+desc: >-
+  替代 AstrBot 自带的 TTS 触发逻辑。按档案（开关、概率、被动触发字数上限、冷却、指令短语）
+  决定每条回复是否念出来，先用正则剥掉动作描写、括号注释、markdown、链接和表情，
+  再调用 AstrBot 中已配置的 TTS 服务（Genie、GSVI、OpenAI TTS 等）合成。
+  串行合成、超时与过期自动降级为纯文字。设置通过内置 WebUI 管理。
+author: iownmmiku
+version: 0.1.0
+repo: https://github.com/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech
+astrbot_version: ">=4.24,<5"
+tags:
+  - tts
+  - voice
+  - webui
