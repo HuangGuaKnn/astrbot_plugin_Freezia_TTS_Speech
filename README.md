@@ -19,6 +19,13 @@ WebUI 会检测上面这几项，没处理好时在页面顶部显示提醒。
 - AstrBot ≥ 4.24（需要插件页面功能）
 - 至少一个 TTS 服务提供商
 
+## 安装
+
+- 在 AstrBot 插件管理中填写仓库地址 `https://github.com/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech` 安装；
+- 或从 [Releases](https://github.com/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech/releases) 下载附件 `astrbot_plugin_Freezia_TTS_Speech.zip`，在插件管理中上传安装。附件 `SHA256SUMS.txt` 提供校验值。
+
+安装后重载插件，在控制台的插件页面打开「Freezia TTS Speech」完成设置。
+
 ## 工作流程
 
 ```
