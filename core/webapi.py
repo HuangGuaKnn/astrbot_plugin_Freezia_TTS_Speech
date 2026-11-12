@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from . import VERSION
-from .decide import decide, effective_send_mode
+from .decide import decide, effective_probability, effective_send_mode, find_emotion
 from .engine import Engine, describe_error, filter_text
 from .settings import Profile, Settings
 
@@ -28,7 +28,13 @@ _GLOBAL_KEYS = (
     "debug",
     "session_profiles",
     "muted_sessions",
+    "voice_languages",
+    "llm_provider_id",
+    "llm_timeout",
+    "translate_fail",
+    "pronunciations",
 )
+FOLLOW_PROFILE = "@profile"
 _AUDIO_TYPES = {".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".opus": "audio/ogg"}
 
 
@@ -63,11 +69,16 @@ def state(engine: Engine) -> dict[str, Any]:
         diagnostics = engine.host.diagnostics()
     except Exception as exc:
         diagnostics = {"error": describe_error(exc)}
+    try:
+        chat_providers = engine.host.list_chat_providers()
+    except Exception:
+        chat_providers = []
     default_profile = settings.profiles[settings.default_profile]
     return {
         "version": VERSION,
         "settings": settings.to_dict(),
         "providers": providers,
+        "chat_providers": chat_providers,
         "provider_error": provider_error,
         "resolved_provider": engine.resolve_provider_id(default_profile),
         "diagnostics": diagnostics,
@@ -132,12 +143,23 @@ def _pick_profile(engine: Engine, name: Any) -> Profile:
     return settings.profiles.get(name) or settings.profiles[settings.default_profile]
 
 
+def _pick_language(engine: Engine, profile: Profile, value: Any) -> str:
+    """页面传来的语言：@profile 跟随档案；空表示和文字相同；其余必须是已配置的语言。"""
+    if value is None or value == FOLLOW_PROFILE:
+        return profile.voice_language
+    code = engine.normalize_language(str(value))
+    if code is None:
+        raise ValueError(f"没有配置语言「{value}」")
+    return code
+
+
 def preview(engine: Engine, body: dict) -> dict[str, Any]:
-    """试算过滤结果和判定路径。不计冷却，概率只说明会不会进入概率判定。"""
+    """试算过滤结果和判定路径。不计冷却，概率只说明会不会进入概率判定；不调用 LLM。"""
     profile = _pick_profile(engine, body.get("profile"))
     text = str(body.get("text") or "")[:5000]
     filtered = filter_text(profile, text)
     is_group = bool(body.get("is_group"))
+    emotion = find_emotion(profile, text)
     decision = decide(
         profile,
         text=filtered,
@@ -145,19 +167,28 @@ def preview(engine: Engine, body: dict) -> dict[str, Any]:
         is_group=is_group,
         plugin_enabled=engine.settings.enabled,
         rand=0.0,
+        tool_request=bool(body.get("simulate_tool")),
+        user_voice=bool(body.get("simulate_voice")),
+        emotion_hit=emotion,
     )
     result = decision.to_dict()
+    probability, label = effective_probability(profile, emotion)
     if decision.code == "probability_hit":
-        result["reason"] = f"满足被动触发条件，每次有 {profile.probability:.0%} 的机会出声"
-        result["trace"][-1].update(state="chance", note=f"{profile.probability:.0%} 机会")
+        result["reason"] = f"满足被动触发条件，每次有 {probability:.0%} 的机会出声"
+        result["trace"][-1].update(state="chance", note=f"{label} 机会")
     elif decision.code == "probability_miss":
         result["reason"] = "概率为 0，被动触发不会出声"
+    language = _pick_language(engine, profile, body.get("language"))
+    lang = engine.settings.language(language) if language else None
     return {
         "profile": profile.name,
         "filtered": filtered,
         "chars": len(filtered),
         "max_chars": profile.max_chars,
         "send_mode": effective_send_mode(profile, is_group),
+        "language": language,
+        "language_name": lang["name"] if lang else "",
+        "uses_llm": bool(lang) or profile.filter_mode == "llm",
         "decision": result,
     }
 
@@ -173,15 +204,21 @@ async def synthesize(engine: Engine, body: dict) -> dict[str, Any]:
         text = filter_text(profile, text)
         if not text:
             raise ValueError("过滤后没有可朗读的内容")
-    provider_id = str(body.get("provider_id") or "") or engine.resolve_provider_id(profile)
+    language = _pick_language(engine, profile, body.get("language"))
     try:
-        audio_path, elapsed = await engine.synthesize_text(text, provider_id)
+        spoken, audio_path, elapsed = await engine.speak_text(profile, text, language)
     except Exception as exc:
         raise RuntimeError(f"合成失败：{describe_error(exc)}") from exc
     data, mime = await asyncio.to_thread(_read_audio, Path(audio_path))
+    lang = engine.settings.language(spoken.language) if spoken.language else None
     return {
-        "text": text,
-        "provider_id": provider_id,
+        "text": spoken.text,
+        "language": spoken.language,
+        "language_name": lang["name"] if lang else "",
+        "llm_used": spoken.llm_used,
+        "llm_ms": spoken.llm_ms,
+        "note": spoken.note,
+        "provider_id": spoken.provider_id,
         "elapsed_ms": elapsed,
         "bytes": len(data),
         "audio": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}",

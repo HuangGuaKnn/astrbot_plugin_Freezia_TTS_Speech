@@ -58,14 +58,25 @@ class FakeResult:
 
 
 class FakeEvent:
-    def __init__(self, result, message="", umo="aiocqhttp:FriendMessage:1", private=True):
+    def __init__(self, result, message="", umo="aiocqhttp:FriendMessage:1", private=True, components=None):
         self._result = result
         self.message_str = message
         self.unified_msg_origin = umo
         self._private = private
+        self._extras = {}
+        self._components = components if components is not None else [Plain(message)]
 
     def get_result(self):
         return self._result
+
+    def get_messages(self):
+        return self._components
+
+    def set_extra(self, key, value):
+        self._extras[key] = value
+
+    def get_extra(self, key=None, default=None):
+        return self._extras.get(key, default)
 
     def is_private_chat(self):
         return self._private
@@ -88,7 +99,7 @@ class FakeProvider:
         self.texts.append(text)
         if self.fail:
             raise ConnectionError("TTS 服务未启动")
-        path = Path(self.root) / f"{len(self.texts)}.wav"
+        path = Path(self.root) / f"{self.provider_config['id']}-{len(self.texts)}.wav"
         path.write_bytes(b"RIFF")
         return str(path)
 
@@ -96,6 +107,7 @@ class FakeProvider:
 class FakeContext:
     def __init__(self, root):
         self.provider = FakeProvider(root)
+        self.extra_tts = [FakeProvider(root, pid="genie_ja")]
         self.config = {
             "provider_tts_settings": {"enable": False},
             "provider_settings": {"streaming_response": False},
@@ -104,12 +116,30 @@ class FakeContext:
         self.sent = []
         self.send_ok = True
         self.routes = []
+        self.llm_calls = []
+        self.llm_reply = ""
+        self.llm_fail = False
 
     def get_all_tts_providers(self):
-        return [self.provider]
+        return self.tts_providers()
 
     def get_provider_by_id(self, pid):
-        return self.provider if pid == self.provider.provider_config["id"] else None
+        return next((p for p in self.tts_providers() if p.provider_config["id"] == pid), None)
+
+    def tts_providers(self):
+        return [self.provider, *self.extra_tts]
+
+    def get_all_providers(self):
+        return [types.SimpleNamespace(provider_config={"id": "chat_main", "type": "openai_chat_completion"})]
+
+    async def get_current_chat_provider_id(self, umo):
+        return "chat_main"
+
+    async def llm_generate(self, *, chat_provider_id, prompt=None, system_prompt=None, **kwargs):
+        self.llm_calls.append({"provider": chat_provider_id, "prompt": prompt, "system": system_prompt})
+        if self.llm_fail:
+            raise TimeoutError("模型超时")
+        return types.SimpleNamespace(completion_text=self.llm_reply or prompt)
 
     def get_config(self, umo=None):
         return self.config
@@ -137,6 +167,7 @@ def _install_stubs(data_dir: Path):
         on_decorating_result=passthrough,
         command_group=command_group,
         permission_type=passthrough,
+        llm_tool=passthrough,
         PermissionType=types.SimpleNamespace(ADMIN="admin"),
     )
 
@@ -182,7 +213,9 @@ def _load_main(data_dir: Path):
     return importlib.import_module(name)
 
 
-class MainHookTest(unittest.IsolatedAsyncioTestCase):
+class _PluginCase(unittest.IsolatedAsyncioTestCase):
+    """公共环境：桩模块 + 插件实例。"""
+
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -195,18 +228,25 @@ class MainHookTest(unittest.IsolatedAsyncioTestCase):
         await self.plugin.terminate()
         self.tmp.cleanup()
 
-    def set_profile(self, **changes):
+    def update_settings(self, **changes):
         from importlib import import_module
 
         settings_mod = import_module(f"{PLUGIN_DIR.name}.core.settings")
         data = self.plugin.engine.settings.to_dict()
-        data["profiles"]["default"].update(changes)
+        profile_changes = changes.pop("profile", {})
+        data["profiles"]["default"].update(profile_changes)
+        data.update(changes)
         self.plugin.engine.save_settings(settings_mod.Settings.from_dict(data))
+
+    def set_profile(self, **changes):
+        self.update_settings(profile=changes)
 
     async def drain(self):
         while self.plugin._tasks:
             await asyncio.gather(*list(self.plugin._tasks), return_exceptions=True)
 
+
+class MainHookTest(_PluginCase):
     async def test_registers_page_routes(self):
         await self.plugin.initialize()
         routes = dict(self.context.routes)
@@ -298,6 +338,61 @@ class MainHookTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("会话 ID：aiocqhttp:FriendMessage:1", replies[0][1])
         [item async for item in self.plugin.ftts_on(FakeEvent(None))]
         self.assertFalse(self.plugin.engine.settings.is_muted("aiocqhttp:FriendMessage:1"))
+
+
+class MainToolTest(_PluginCase):
+    """角色工具、翻译、语音对语音。"""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.update_settings(
+            voice_languages=[{"code": "ja", "name": "日语", "provider_id": "genie_ja"}],
+            profile={"probability": 0.0, "cooldown": 0, "tool_interval": 0},
+        )
+
+    async def test_tool_marks_event_and_reply_is_spoken_in_language(self):
+        import json as _json
+
+        event = FakeEvent(FakeResult([Plain("（小声）晚安～")]), message="晚安")
+        result = _json.loads(await self.plugin.freezia_voice_reply(event, language="日语"))
+        self.assertTrue(result["ok"])
+        self.assertEqual(event.get_extra(self.main.VOICE_REQUEST_KEY), {"language": "ja"})
+        self.context.llm_reply = "おやすみ～"
+        await self.plugin.on_decorating_result(event)
+        await self.drain()
+        ja = self.context.extra_tts[0]
+        self.assertEqual(ja.texts, ["おやすみ～"])
+        self.assertIn("翻译成日语", self.context.llm_calls[-1]["system"])
+        self.assertEqual(self.context.llm_calls[-1]["provider"], "chat_main")
+        self.assertEqual(self.plugin.engine.events[0]["source"], "tool")
+        self.assertEqual(self.plugin.engine.events[0]["status"], "sent")
+
+    async def test_tool_refused_when_muted(self):
+        import json as _json
+
+        self.plugin.engine.set_muted("aiocqhttp:FriendMessage:1", True)
+        event = FakeEvent(FakeResult([Plain("你好")]))
+        result = _json.loads(await self.plugin.freezia_voice_reply(event))
+        self.assertFalse(result["ok"])
+        self.assertIn("静音", result["reason"])
+        self.assertIsNone(event.get_extra(self.main.VOICE_REQUEST_KEY))
+
+    async def test_user_voice_message_gets_voice_reply(self):
+        event = FakeEvent(FakeResult([Plain("收到你的语音啦")]), message="你好", components=[Record(file="in.amr")])
+        await self.plugin.on_decorating_result(event)
+        await self.drain()
+        self.assertEqual(self.context.provider.texts, ["收到你的语音啦"])
+        self.assertEqual(self.plugin.engine.events[0]["source"], "voice")
+
+    async def test_translation_failure_skips_voice_by_default(self):
+        self.context.llm_fail = True
+        event = FakeEvent(FakeResult([Plain("晚安")]))
+        await self.plugin.freezia_voice_reply(event, language="ja")
+        await self.plugin.on_decorating_result(event)
+        await self.drain()
+        self.assertEqual(self.context.extra_tts[0].texts, [])
+        self.assertEqual(self.plugin.engine.events[0]["status"], "failed")
+        self.assertIn("翻译失败", self.plugin.engine.events[0]["detail"])
 
 
 if __name__ == "__main__":

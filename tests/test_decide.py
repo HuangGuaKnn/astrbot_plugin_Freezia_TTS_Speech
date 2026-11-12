@@ -63,6 +63,36 @@ class DecideTest(unittest.TestCase):
         self.assertTrue(run(Profile(probability=1.0), rand=0.999).speak)
         self.assertFalse(run(Profile(probability=0.0), rand=0.0).speak)
 
+    def test_tool_and_voice_requests_are_forced(self):
+        profile = Profile(probability=0.0, max_chars=3, allow_group=False)
+        tool = run(profile, text="这句超过了三个字", tool_request=True, is_group=True, rand=0.99)
+        self.assertEqual((tool.speak, tool.code, tool.forced), (True, "tool_request", True))
+        voice = run(profile, text="这句超过了三个字", user_voice=True, rand=0.99)
+        self.assertEqual(voice.code, "voice_message")
+        off = run(Profile(probability=0.0, voice_to_voice=False), user_voice=True, rand=0.99)
+        self.assertEqual(off.code, "probability_miss")
+
+    def test_tool_still_respects_mute_and_switches(self):
+        self.assertEqual(run(user_text="别出声", tool_request=True).code, "mute_phrase")
+        self.assertEqual(run(session_muted=True, tool_request=True).code, "session_muted")
+        self.assertEqual(run(text="", tool_request=True).code, "empty")
+
+    def test_emotion_boost(self):
+        profile = Profile(probability=0.4, emotion_boost=2.0)
+        result = run(profile, rand=0.7, emotion_hit="♡")
+        self.assertEqual(result.code, "probability_hit")
+        self.assertIn("40% × 2 = 80%", result.reason)
+        self.assertEqual(run(profile, rand=0.7).code, "probability_miss")
+        capped = run(Profile(probability=0.8, emotion_boost=5.0), rand=0.99, emotion_hit="！")
+        self.assertIn("= 100%", capped.reason)
+
+    def test_find_emotion(self):
+        from core.decide import find_emotion
+
+        self.assertEqual(find_emotion(Profile(), "好耶！"), "！")
+        self.assertIsNone(find_emotion(Profile(), "好的"))
+        self.assertIsNone(find_emotion(Profile(emotion_boost=1.0), "好耶！"))
+
     def test_trace_covers_every_step(self):
         from core.decide import STEPS
 

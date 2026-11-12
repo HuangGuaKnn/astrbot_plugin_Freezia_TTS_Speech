@@ -490,6 +490,7 @@ button:focus-visible, .seg label:focus-within, .chip-toggle:focus-within, .seg-c
 .ev-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; font-size: 12px; color: var(--muted); }
 .ev-meta .why { color: var(--text-2); }
 .ev-detail { margin-top: 6px; font-size: 12px; color: var(--danger); background: var(--danger-weak); padding: 4px 10px; border-radius: 8px; width: fit-content; max-width: 100%; overflow-wrap: anywhere; }
+.ev-detail.soft { color: var(--warn); background: var(--warn-weak); }
 .pill { display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; white-space: nowrap; background: var(--surface-3); color: var(--muted); }
 .pill.ok { background: var(--ok-weak); color: var(--ok); }
 .pill.bad { background: var(--danger-weak); color: var(--danger); }
@@ -582,6 +583,26 @@ input[type="range"]:focus-visible { outline: 2px solid var(--primary); outline-o
 .muted-chip .i { width: 16px; height: 16px; color: var(--muted); }
 .muted-chip code { background: none; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 语言对照与发音词典的行编辑器 */
+.lang-list, .dict-rows { display: grid; gap: 8px; }
+.lang-row, .dict-row {
+  display: grid; gap: 8px; align-items: center;
+  padding: 8px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--border);
+}
+.lang-row { grid-template-columns: 110px minmax(0, 1fr) minmax(0, 1.4fr) 38px; }
+.dict-row { grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr) 140px 38px; }
+.dict-row .arrow { color: var(--muted); display: grid; place-items: center; }
+.dict-row .arrow .i { width: 16px; height: 16px; }
+.dict-head { display: grid; grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr) 140px 38px; gap: 8px; padding: 0 9px; font-size: 12px; color: var(--muted); }
+.lang-head { display: grid; grid-template-columns: 110px minmax(0, 1fr) minmax(0, 1.4fr) 38px; gap: 8px; padding: 0 9px; font-size: 12px; color: var(--muted); }
+.dict-foot { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.tag-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 99px; font-size: 11.5px; font-weight: 600; background: var(--frost-weak); color: var(--frost); white-space: nowrap; }
+.tag-chip.tool { background: var(--primary-weak); color: var(--primary); }
+.tag-chip.voice { background: var(--ok-weak); color: var(--ok); }
+.tag-chip.user { background: var(--warn-weak); color: var(--warn); }
+.ev-spoken { margin-top: 3px; font-size: 13px; color: var(--text-2); overflow-wrap: anywhere; }
+.ev-spoken b { font-weight: 600; color: var(--frost); margin-right: 4px; }
+
 /* ---------- 过滤与试听 ---------- */
 .lab { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 18px; align-items: start; }
 .lab-input { position: sticky; top: 20px; display: grid; gap: 14px; }
@@ -629,6 +650,8 @@ input[type="range"]:focus-visible { outline: 2px solid var(--primary); outline-o
 .spoken::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px; border-radius: 3px; background: var(--brand); }
 .spoken-label { display: block; font-size: 11.5px; font-weight: 700; letter-spacing: 1.2px; color: var(--primary); text-transform: uppercase; margin-bottom: 4px; }
 .spoken p { font-size: 15.5px; line-height: 1.7; overflow-wrap: anywhere; }
+.spoken-note { display: block; margin-top: 6px; font-size: 12px; color: var(--text-2); }
+.spoken-note.warn { color: var(--warn); }
 .spoken.empty-speech { background: var(--surface-3); }
 .spoken.empty-speech p { color: var(--muted); }
 .meter { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
@@ -729,6 +752,11 @@ input[type="range"]:focus-visible { outline: 2px solid var(--primary); outline-o
   .ev .pill { grid-column: 2; justify-self: start; }
   .map-row { grid-template-columns: minmax(0, 1fr) 38px; }
   .map-row select { grid-column: 1 / 2; }
+  .lang-head, .dict-head { display: none; }
+  .lang-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 38px; }
+  .lang-row select { grid-column: 1 / 3; }
+  .dict-row { grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr) 38px; }
+  .dict-row select { grid-column: 1 / 4; }
   .pipeline { gap: 2px; }
   .stage-node { width: 40px; height: 40px; border-radius: 12px; }
   .link { margin-top: 19px; min-width: 8px; }

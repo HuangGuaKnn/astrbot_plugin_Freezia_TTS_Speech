@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 import traceback
@@ -19,6 +20,7 @@ from .core.webapi import GET_ROUTES, POST_ROUTES, dispatch
 PAGE_PREFIX = f"/{PLUGIN_NAME}/page"
 STREAMING_WARN_INTERVAL = 600
 MODE_LABELS = {"both": "文字+语音", "voice_only": "仅语音", "text_only": "仅文字"}
+VOICE_REQUEST_KEY = f"{PLUGIN_NAME}:voice_request"
 _SAY_PREFIX = re.compile(r"^\s*[/!！]?ftts\s+say\b\s*", re.I)
 
 
@@ -28,12 +30,33 @@ class AstrBotHost:
     def __init__(self, context: Context):
         self.context = context
 
-    def list_tts_providers(self) -> list[dict[str, Any]]:
+    @staticmethod
+    def _describe(providers) -> list[dict[str, Any]]:
         result = []
-        for provider in self.context.get_all_tts_providers() or []:
+        for provider in providers or []:
             config = getattr(provider, "provider_config", None) or {}
             result.append({"id": str(config.get("id", "")), "type": str(config.get("type", ""))})
         return [item for item in result if item["id"]]
+
+    def list_tts_providers(self) -> list[dict[str, Any]]:
+        return self._describe(self.context.get_all_tts_providers())
+
+    def list_chat_providers(self) -> list[dict[str, Any]]:
+        return self._describe(self.context.get_all_providers())
+
+    async def chat(self, provider_id: str, system_prompt: str, prompt: str, umo: str = "") -> str:
+        """只调用一次模型，不带工具、记忆和对话历史。"""
+        if not provider_id and umo:
+            provider_id = await self.context.get_current_chat_provider_id(umo)
+        if not provider_id:
+            providers = self.list_chat_providers()
+            provider_id = providers[0]["id"] if providers else ""
+        if not provider_id:
+            raise LookupError("没有可用的对话模型")
+        response = await self.context.llm_generate(
+            chat_provider_id=provider_id, prompt=prompt, system_prompt=system_prompt
+        )
+        return getattr(response, "completion_text", "") or ""
 
     async def synthesize(self, provider_id: str, text: str) -> str:
         provider = self.context.get_provider_by_id(provider_id)
@@ -165,6 +188,8 @@ class FreeziaTTS(Star):
             reply_text=reply,
             user_text=event.message_str or "",
             is_group=not event.is_private_chat(),
+            voice_request=event.get_extra(VOICE_REQUEST_KEY),
+            user_voice=any(isinstance(comp, Comp.Record) for comp in (event.get_messages() or [])),
         )
         if self.engine.settings.debug:
             logger.info(f"[Freezia TTS] {plan.umo} · {plan.profile.name} · {plan.decision.reason}")
@@ -235,6 +260,29 @@ class FreeziaTTS(Star):
             self._last_streaming_warn = now
             logger.warning("[Freezia TTS] 检测到流式输出，本插件在流式回复中不可用，已跳过。如需语音请关闭流式输出。")
 
+    # ---------- 角色可调用的工具 ----------
+    @filter.llm_tool(name="freezia_voice_reply")
+    async def freezia_voice_reply(self, event: AstrMessageEvent, language: str = ""):
+        """想用声音说出本轮回复时调用：情绪强烈、亲密或安慰的时刻，用户想听你的声音，或念诗、唱歌时。普通闲聊不要调用，不要每轮都用。调用后正常写出要说的话，不要提到工具或语音合成。
+
+        Args:
+            language (string): 语音的语言代码或名称，例如 ja、en、日语；留空表示和文字相同。只有已配置的语言可用。
+        """
+        result = self.engine.request_voice(
+            umo=event.unified_msg_origin, user_text=event.message_str or "", language=language
+        )
+        if result.get("ok"):
+            event.set_extra(VOICE_REQUEST_KEY, {"language": result["language"]})
+        if self.engine.settings.debug:
+            logger.info(f"[Freezia TTS] 角色调用语音工具：{result}")
+        return json.dumps(result, ensure_ascii=False)
+
+    def _language_label(self, code: str) -> str:
+        if not code:
+            return "和文字相同"
+        lang = self.engine.settings.language(code)
+        return f"{lang['name']}（{code}）" if lang else f"{code}（未配置）"
+
     # ---------- 指令 ----------
     @filter.command_group("ftts")
     def ftts(self):
@@ -254,6 +302,8 @@ class FreeziaTTS(Star):
             f"档案：{profile.name}（概率 {profile.probability:.0%}，被动上限 {profile.max_chars} 字，"
             f"{MODE_LABELS.get(profile.send_mode, profile.send_mode)}）",
             f"TTS 服务：{provider_id}",
+            f"语音语言：{self._language_label(profile.voice_language)}",
+            f"角色主动语音：{'允许' if profile.tool_enabled else '关闭'}",
             f"会话 ID：{umo}",
         ]
         try:
@@ -295,13 +345,13 @@ class FreeziaTTS(Star):
             yield event.plain_result("过滤后没有可朗读的内容。")
             return
         try:
-            path, elapsed = await self.engine.synthesize_text(
-                cleaned, self.engine.resolve_provider_id(profile)
+            spoken, path, elapsed = await self.engine.speak_text(
+                profile, cleaned, profile.voice_language, event.unified_msg_origin
             )
             record = await self._record(path)
         except Exception as exc:
             yield event.plain_result(f"合成失败：{describe_error(exc)}")
             return
         if settings.debug:
-            logger.info(f"[Freezia TTS] /ftts say 合成耗时 {elapsed} ms")
+            logger.info(f"[Freezia TTS] /ftts say 合成耗时 {elapsed} ms，朗读：{spoken.text}")
         yield event.chain_result([record])

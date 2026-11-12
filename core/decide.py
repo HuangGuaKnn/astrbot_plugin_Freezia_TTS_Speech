@@ -20,6 +20,8 @@ STEPS = (
     ("mute", "不出声短语"),
     ("content", "可朗读内容"),
     ("force", "强制出声短语"),
+    ("tool", "角色请求"),
+    ("voice", "收到语音"),
     ("scope", "聊天范围"),
     ("length", "被动字数上限"),
     ("cooldown", "冷却"),
@@ -66,7 +68,7 @@ class _Trace:
         return tuple(self.items)
 
 
-def _contains_any(text: str, phrases: list[str]) -> str | None:
+def contains_any(text: str, phrases: list[str]) -> str | None:
     compact = "".join(text.split())
     for phrase in phrases:
         needle = "".join(phrase.split())
@@ -93,10 +95,15 @@ def decide(
     now: float = 0.0,
     last_voice_at: float | None = None,
     rand: float = 0.0,
+    tool_request: bool = False,
+    user_voice: bool = False,
+    emotion_hit: str | None = None,
 ) -> Decision:
     """按优先级判定，命中即停。
 
     text 是过滤后的回复文本，user_text 是用户这条消息（指令短语只在这里找）。
+    tool_request：角色本轮调用了语音工具；user_voice：用户这条是语音消息；
+    emotion_hit：回复里命中的情绪符号（命中时概率乘以档案的系数）。
     rand 由调用方传入 [0, 1) 的随机数，测试时可固定。
     """
     trace = _Trace()
@@ -125,13 +132,13 @@ def decide(
     trace.add("send_mode", "pass", MODE_LABELS.get(profile.send_mode, profile.send_mode))
 
     # 先判「不出声」：否则「出声」会命中「别出声」
-    mute_hit = _contains_any(user_text, profile.mute_phrases)
+    mute_hit = contains_any(user_text, profile.mute_phrases)
     if mute_hit:
         trace.add("mute", "stop", f"含「{mute_hit}」")
         return done(False, "mute_phrase", f"用户消息含「{mute_hit}」")
     trace.add("mute", "pass", "未出现")
 
-    force_hit = _contains_any(user_text, profile.force_phrases)
+    force_hit = contains_any(user_text, profile.force_phrases)
     if not text:
         trace.add("content", "stop", "过滤后为空")
         return done(False, "empty", "过滤后没有可朗读的内容", bool(force_hit))
@@ -141,6 +148,16 @@ def decide(
         trace.add("force", "speak", f"含「{force_hit}」")
         return done(True, "force_phrase", f"用户消息含「{force_hit}」，强制出声", True, rest="bypass")
     trace.add("force", "pass", "未出现")
+
+    if tool_request:
+        trace.add("tool", "speak", "角色调用了语音工具")
+        return done(True, "tool_request", "角色主动选择用语音说", True, rest="bypass")
+    trace.add("tool", "pass", "未调用")
+
+    if user_voice and profile.voice_to_voice:
+        trace.add("voice", "speak", "用户发来语音")
+        return done(True, "voice_message", "用户发来语音，用语音回复", True, rest="bypass")
+    trace.add("voice", "pass", "未开启" if user_voice else "文字消息")
 
     if is_group and not profile.allow_group:
         trace.add("scope", "stop", "群聊未允许")
@@ -166,8 +183,25 @@ def decide(
             return done(False, "cooldown", f"冷却中，还剩 {remaining:.0f} 秒")
     trace.add("cooldown", "pass", "不限制" if profile.cooldown <= 0 else "已就绪")
 
-    if rand < profile.probability:
-        trace.add("probability", "speak", f"{profile.probability:.0%}")
-        return done(True, "probability_hit", f"概率命中（{profile.probability:.0%}）")
-    trace.add("probability", "stop", f"{profile.probability:.0%}")
-    return done(False, "probability_miss", f"概率未命中（{profile.probability:.0%}）")
+    probability, label = effective_probability(profile, emotion_hit)
+    if rand < probability:
+        trace.add("probability", "speak", label)
+        return done(True, "probability_hit", f"概率命中（{label}）")
+    trace.add("probability", "stop", label)
+    return done(False, "probability_miss", f"概率未命中（{label}）")
+
+
+def effective_probability(profile: Profile, emotion_hit: str | None) -> tuple[float, str]:
+    """返回 (实际概率, 说明)。命中情绪符号时乘以系数，上限 100%。"""
+    base = profile.probability
+    if emotion_hit and profile.emotion_boost > 1 and base > 0:
+        boosted = min(1.0, base * profile.emotion_boost)
+        return boosted, f"{base:.0%} × {profile.emotion_boost:g} = {boosted:.0%}，含「{emotion_hit}」"
+    return base, f"{base:.0%}"
+
+
+def find_emotion(profile: Profile, reply: str) -> str | None:
+    """在原始回复里找第一个情绪符号（过滤前找，表情和 ！ 都还在）。"""
+    if profile.emotion_boost <= 1:
+        return None
+    return next((marker for marker in profile.emotion_markers if marker and marker in reply), None)

@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import json
 import math
+import re
 import struct
 import sys
 import tempfile
@@ -26,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from core.engine import Engine  # noqa: E402
+from core.settings import Settings  # noqa: E402
 from core.webapi import dispatch  # noqa: E402
 
 PAGE_DIR = ROOT / "pages" / "freezia"
@@ -46,7 +48,20 @@ class FakeHost:
         self.streaming = streaming
 
     def list_tts_providers(self):
-        return [{"id": "fake_genie", "type": "dev"}, {"id": "fake_slow", "type": "dev"}]
+        return [
+            {"id": "fake_genie", "type": "dev"},
+            {"id": "fake_genie_ja", "type": "dev"},
+            {"id": "fake_slow", "type": "dev"},
+        ]
+
+    def list_chat_providers(self):
+        return [{"id": "fake_chat", "type": "dev"}]
+
+    async def chat(self, provider_id: str, system_prompt: str, prompt: str, umo: str = "") -> str:
+        """假的对话模型：翻译时在前面标上目标语言，清洗时原样返回。"""
+        await asyncio.sleep(0.3)
+        match = re.search(r"翻译成(\S+?)。", system_prompt)
+        return f"〔{match.group(1)}〕{prompt}" if match else prompt
 
     async def synthesize(self, provider_id: str, text: str) -> str:
         if provider_id == "fake_slow":
@@ -84,6 +99,26 @@ def _write_tone(path: Path, text: str) -> None:
 
 
 async def seed_demo(engine: Engine) -> None:
+    if not engine.settings.voice_languages:
+        data = engine.settings.to_dict()
+        data["voice_languages"] = [{"code": "ja", "name": "日语", "provider_id": "fake_genie_ja"}]
+        data["pronunciations"] = [{"from": "Freezia", "to": "芙蕾齐娅", "lang": ""}]
+        engine.save_settings(Settings.from_dict(data))
+    request = engine.request_voice(umo="aiocqhttp:FriendMessage:10006", user_text="晚安", language="ja")
+    plan = engine.plan(umo="aiocqhttp:FriendMessage:10006", reply_text="（小声）晚安，做个好梦～",
+                       user_text="晚安", is_group=False, voice_request=request if request["ok"] else None)
+    try:
+        await engine.synthesize(plan)
+        engine.mark_sent(plan)
+    except Exception:
+        pass
+    voice = engine.plan(umo="aiocqhttp:FriendMessage:10007", reply_text="听到你的声音啦", user_text="",
+                        is_group=False, user_voice=True)
+    try:
+        await engine.synthesize(voice)
+        engine.mark_sent(voice)
+    except Exception:
+        pass
     samples = [
         ("aiocqhttp:FriendMessage:10001", "*探头* 你回来啦～", "", False, 0.05),
         ("aiocqhttp:FriendMessage:10001", "好的～", "", False, 0.9),

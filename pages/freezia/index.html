@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Freezia TTS Speech</title>
-  <link rel="stylesheet" href="./app.css">
-  <script type="module" src="./app.js"></script>
+  <link rel="stylesheet" href="./app.css?v=0.2.0">
+  <script type="module" src="./app.js?v=0.2.0"></script>
 </head>
 <body>
 <svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -167,6 +167,10 @@
                 <label class="chip-toggle"><input type="checkbox" name="allow_group"><span>群聊</span></label>
               </div>
             </div>
+            <div class="fields two">
+              <label class="field"><span class="label">情绪联动系数</span><span class="input-unit"><input type="number" name="emotion_boost" min="1" max="5" step="0.1"><em>倍</em></span><small class="help">回复里出现右边的符号时，触发概率乘以这个系数；1 表示不联动</small></label>
+              <div class="field"><span class="label">情绪符号</span><div class="tags" data-tags="emotion_markers"></div><small class="help">在过滤前的原始回复里查找，回车添加</small></div>
+            </div>
           </fieldset>
 
           <fieldset class="section">
@@ -179,17 +183,34 @@
             <label class="toggle-row"><span><strong>群聊里「仅语音」改为文字 + 语音</strong><small>只发语音容易让群友以为没有回应</small></span><span class="switch"><input type="checkbox" name="group_force_both" role="switch"><span class="track"></span></span></label>
             <div class="field"><span class="label">文本过滤</span>
               <div class="seg" role="radiogroup" aria-label="文本过滤">
-                <label><input type="radio" name="filter_mode" value="regex"><span>正则剥离（推荐）</span></label>
+                <label><input type="radio" name="filter_mode" value="regex"><span>正则剥离</span></label>
+                <label><input type="radio" name="filter_mode" value="llm"><span>正则 + LLM 清洗</span></label>
                 <label><input type="radio" name="filter_mode" value="off"><span>不过滤</span></label>
               </div>
-              <small class="help">正则剥离会去掉动作描写、括号注释、markdown、链接、表情和颜文字</small>
+              <small class="help">正则剥离去掉动作描写、括号、markdown、链接和表情；LLM 清洗还能去掉没有标记的旁白，但每次出声多一次模型调用</small>
             </div>
+          </fieldset>
+
+          <fieldset class="section">
+            <legend>角色主动与语言</legend>
+            <label class="toggle-row"><span><strong>允许角色主动用语音</strong><small>角色可以调用 freezia_voice_reply 工具，让这一轮的回复念出来；需要对话模型支持函数调用</small></span><span class="switch"><input type="checkbox" name="tool_enabled" role="switch"><span class="track"></span></span></label>
+            <div class="fields two">
+              <label class="field"><span class="label">主动语音最短间隔</span><span class="input-unit"><input type="number" name="tool_interval" min="0" max="86400"><em>秒</em></span><small class="help">同一会话两次主动语音的最小间隔，0 为不限制</small></label>
+              <label class="field"><span class="label">语音语言</span><select name="voice_language"></select><small class="help">选外语时先翻译再合成；语言在「会话与全局」里配置</small></label>
+            </div>
+            <label class="toggle-row"><span><strong>收到语音时用语音回复</strong><small>用户发来语音消息时，这一轮的回复一定念出来</small></span><span class="switch"><input type="checkbox" name="voice_to_voice" role="switch"><span class="track"></span></span></label>
           </fieldset>
 
           <fieldset class="section">
             <legend>指令短语</legend>
             <div class="field"><span class="label">强制出声</span><div class="tags good" data-tags="force_phrases"></div><small class="help">用户消息里出现任意一个，就无视字数上限、冷却和概率念出来。回车添加</small></div>
-            <div class="field"><span class="label">不出声</span><div class="tags bad" data-tags="mute_phrases"></div><small class="help">优先于强制出声判定，本次只发文字</small></div>
+            <div class="field"><span class="label">不出声</span><div class="tags bad" data-tags="mute_phrases"></div><small class="help">优先于强制出声和角色主动，本次只发文字</small></div>
+          </fieldset>
+
+          <fieldset class="section">
+            <legend>发音词典</legend>
+            <div class="dict" data-dict="profile"></div>
+            <small class="help">只对这个档案生效，和全局词典合并，同一原文以档案为准。读法留空表示删掉；指定语言的条目只在念该语言时生效</small>
           </fieldset>
 
           <footer class="savebar" id="profile-savebar">
@@ -219,6 +240,40 @@
           <span class="dirty-note">所有修改已保存</span>
           <button type="button" class="btn ghost reset" id="global-reset"><svg class="i"><use href="#i-undo"/></svg>还原</button>
           <button type="submit" class="btn primary">保存全局设置</button>
+        </footer>
+      </form>
+
+      <form class="card" id="lang-form" novalidate autocomplete="off">
+        <header class="card-head">
+          <div><h3>语言与翻译</h3><p class="muted small">AstrBot 的 TTS 服务把语言写在各自的配置里，每种语言要在 AstrBot 里单独建一个服务条目，再在这里对应起来</p></div>
+          <button class="btn ghost small" id="add-language" type="button"><svg class="i"><use href="#i-plus"/></svg>添加语言</button>
+        </header>
+        <div class="lang-list" id="lang-list"></div>
+        <div class="fields two" style="margin-top: 18px">
+          <label class="field"><span class="label">清洗与翻译用的模型</span><select name="llm_provider_id"></select><small class="help">留空用会话当前的对话模型；建议单独建一个便宜、快、温度低的模型</small></label>
+          <label class="field"><span class="label">LLM 超时</span><span class="input-unit"><input type="number" name="llm_timeout" min="2" max="60" step="1"><em>秒</em></span><small class="help">超时按下面的方式处理</small></label>
+        </div>
+        <div class="field" style="margin-top: 14px"><span class="label">翻译失败时</span>
+          <div class="seg" role="radiogroup" aria-label="翻译失败时">
+            <label><input type="radio" name="translate_fail" value="skip"><span>不发语音</span></label>
+            <label><input type="radio" name="translate_fail" value="original"><span>改念原文</span></label>
+          </div>
+          <small class="help">外语音色硬念中文通常效果很差，默认不发语音，只发文字</small>
+        </div>
+        <footer class="savebar" id="lang-savebar">
+          <span class="dirty-note">所有修改已保存</span>
+          <button type="button" class="btn ghost reset" id="lang-reset"><svg class="i"><use href="#i-undo"/></svg>还原</button>
+          <button type="submit" class="btn primary">保存语言与翻译</button>
+        </footer>
+      </form>
+
+      <form class="card" id="dict-form" novalidate autocomplete="off">
+        <header class="card-head"><div><h3>全局发音词典</h3><p class="muted small">在合成前替换文字，用来纠正名字、英文词和符号的读法；翻译时也会作为专有名词对照表</p></div></header>
+        <div class="dict" data-dict="global"></div>
+        <footer class="savebar" id="dict-savebar">
+          <span class="dirty-note">所有修改已保存</span>
+          <button type="button" class="btn ghost reset" id="dict-reset"><svg class="i"><use href="#i-undo"/></svg>还原</button>
+          <button type="submit" class="btn primary">保存发音词典</button>
         </footer>
       </form>
 
@@ -258,6 +313,15 @@
               </div>
             </div>
           </div>
+          <div class="fields two">
+            <label class="field"><span class="label">语音语言</span><select name="language"></select></label>
+            <div class="field"><span class="label">模拟</span>
+              <div class="chip-toggles">
+                <label class="chip-toggle"><input type="checkbox" name="simulate_tool"><span>角色调用工具</span></label>
+                <label class="chip-toggle"><input type="checkbox" name="simulate_voice"><span>用户发来语音</span></label>
+              </div>
+            </div>
+          </div>
           <div class="actions">
             <button class="btn ghost" type="submit"><svg class="i"><use href="#i-filter"/></svg>预览判定</button>
             <button class="btn primary" type="button" id="synth-btn"><svg class="i"><use href="#i-play"/></svg>合成试听</button>
@@ -281,7 +345,7 @@
           <article class="card" id="filter-card" hidden>
             <header class="card-head"><h3>过滤结果</h3><div class="legend"><span class="lg-del">删除</span><span class="lg-add">补充停顿</span></div></header>
             <div class="diff" id="diff"></div>
-            <div class="spoken" id="spoken-box"><span class="spoken-label">实际朗读</span><p id="spoken"></p></div>
+            <div class="spoken" id="spoken-box"><span class="spoken-label" id="spoken-label">实际朗读</span><p id="spoken"></p><small class="spoken-note" id="spoken-note" hidden></small></div>
             <div class="meter" id="meter"><div class="meter-bar"><span id="meter-fill"></span></div><small id="meter-label"></small></div>
           </article>
 

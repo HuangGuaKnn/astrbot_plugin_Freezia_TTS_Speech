@@ -16,6 +16,12 @@ const STATUS = {
   skipped: { label: "跳过", pill: "", icon: "skip" },
   pending: { label: "合成中", pill: "busy", icon: "wave" },
 };
+const SOURCE_CHIPS = {
+  user: ["用户要求", "user"],
+  tool: ["角色主动", "tool"],
+  voice: ["语音对语音", "voice"],
+};
+const LANG_CODE = /^[A-Za-z][\w-]{0,15}$/;
 const STAGE_LABELS = {
   plugin: "插件开关", profile: "档案开关", session: "会话静音", send_mode: "发送方式", mute: "不出声短语",
   content: "可朗读内容", force: "强制出声", scope: "聊天范围", length: "字数上限", cooldown: "冷却", probability: "概率",
@@ -35,6 +41,7 @@ const SAMPLES = [
   ["Markdown", "**提醒**：记得按时吃饭！\n- 早饭\n- 午饭"],
   ["链接与代码", "资料在这里 https://example.com/docs\n```python\nprint('hi')\n```"],
   ["颜文字", "好耶好耶(๑•̀ㅂ•́)و✧ 一起出发吧🎉"],
+  ["情绪", "最喜欢你了！♡"],
   ["长回复", "今天我们聊了好多事情，从早上的天气说到晚上的晚饭，又从晚饭说到周末想去的地方。".repeat(2)],
 ];
 
@@ -266,6 +273,84 @@ class TagInput {
   }
 }
 
+// ---------- 语言 ----------
+function languages() {
+  return app.model?.settings?.voice_languages || [];
+}
+
+function languageLabel(code) {
+  if (!code) return "和文字相同";
+  const lang = languages().find((l) => l.code === code);
+  return lang ? `${lang.name}（${lang.code}）` : `${code}（未配置）`;
+}
+
+function languageOptions(select, current, { follow = null } = {}) {
+  const options = [];
+  if (follow !== null) options.push(h("option", { value: "@profile" }, follow));
+  options.push(h("option", { value: "" }, "和文字相同"));
+  for (const lang of languages()) options.push(h("option", { value: lang.code }, `${lang.name}（${lang.code}）`));
+  if (current && current !== "@profile" && !languages().some((l) => l.code === current)) {
+    options.push(h("option", { value: current }, `${current}（未配置）`));
+  }
+  select.replaceChildren(...options);
+  select.value = current ?? "";
+}
+
+// ---------- 发音词典编辑器 ----------
+class DictEditor {
+  constructor(container, onChange) {
+    this.onChange = onChange;
+    this.head = h("div", { class: "dict-head" }, h("span", {}, "原文"), h("span"), h("span", {}, "读法"), h("span", {}, "语言"), h("span"));
+    this.rows = h("div", { class: "dict-rows" });
+    this.empty = h("span", { class: "muted small" }, "还没有词条");
+    const add = h("button", {
+      type: "button", class: "btn ghost small",
+      onclick: () => { this.addRow(); this.changed(); this.rows.lastElementChild?.querySelector("input")?.focus(); },
+    }, icon("plus"), "添加词条");
+    container.replaceChildren(this.head, this.rows, h("div", { class: "dict-foot" }, add, this.empty));
+  }
+  changed() {
+    this.sync();
+    this.onChange();
+  }
+  sync() {
+    const count = this.rows.children.length;
+    this.head.hidden = count === 0;
+    this.empty.hidden = count > 0;
+  }
+  langSelect(value) {
+    const select = h("select", { "aria-label": "语言", onchange: () => this.onChange() });
+    select.append(h("option", { value: "" }, "全部语言"));
+    for (const lang of languages()) select.append(h("option", { value: lang.code }, lang.name));
+    if (value && !languages().some((l) => l.code === value)) select.append(h("option", { value }, `${value}（未配置）`));
+    select.value = value || "";
+    return select;
+  }
+  addRow(entry = { from: "", to: "", lang: "" }) {
+    const row = h("div", { class: "dict-row" },
+      h("input", { value: entry.from, maxlength: "40", placeholder: "原文，如 Freezia", "aria-label": "原文" }),
+      h("span", { class: "arrow" }, icon("arrow")),
+      h("input", { value: entry.to, maxlength: "40", placeholder: "读法，留空表示删掉", "aria-label": "读法" }),
+      this.langSelect(entry.lang),
+      h("button", { type: "button", class: "icon-ghost", title: "删除词条", "aria-label": "删除词条", onclick: () => { row.remove(); this.changed(); } }, icon("trash")));
+    this.rows.append(row);
+    this.sync();
+  }
+  set(entries) {
+    this.rows.replaceChildren();
+    for (const entry of entries || []) this.addRow(entry);
+    this.sync();
+  }
+  get() {
+    return [...this.rows.children]
+      .map((row) => {
+        const [source, to] = row.querySelectorAll("input");
+        return { from: source.value, to: to.value, lang: row.querySelector("select").value };
+      })
+      .filter((entry) => entry.from.trim());
+  }
+}
+
 // ---------- 状态与检查 ----------
 function healthChecks(model) {
   const d = model.diagnostics || {};
@@ -290,6 +375,24 @@ function healthChecks(model) {
   }
   if (s.use_file_service && d.callback_api_base === false) {
     list.push({ state: "warn", title: "文件服务缺少 callback_api_base", text: "已开启「通过 AstrBot 文件服务发送语音」，但 AstrBot 没有设置 callback_api_base，会退回本地路径发送。" });
+  }
+  const langIssues = [];
+  for (const lang of s.voice_languages) {
+    if (!lang.provider_id) langIssues.push(`「${lang.name}」没有指定 TTS 服务`);
+    else if (!model.providers.some((p) => p.id === lang.provider_id)) langIssues.push(`「${lang.name}」用的「${lang.provider_id}」不可用`);
+  }
+  for (const [name, profile] of Object.entries(s.profiles)) {
+    if (profile.voice_language && !s.voice_languages.some((l) => l.code === profile.voice_language)) {
+      langIssues.push(`档案「${name}」的语音语言「${profile.voice_language}」没有配置`);
+    }
+  }
+  if (s.llm_provider_id && model.chat_providers && !model.chat_providers.some((p) => p.id === s.llm_provider_id)) {
+    langIssues.push(`清洗与翻译用的模型「${s.llm_provider_id}」不可用`);
+  }
+  if (langIssues.length) {
+    list.push({ state: "warn", title: "语言与翻译配置有问题", text: `${langIssues.join("；")}。请在「会话与全局」检查。` });
+  } else if (s.voice_languages.length) {
+    list.push({ state: "ok", title: `外语语音：${s.voice_languages.map((l) => l.name).join("、")}`, text: `翻译用${s.llm_provider_id ? `「${s.llm_provider_id}」` : "会话当前的对话模型"}，超时 ${s.llm_timeout} 秒` });
   }
   return list;
 }
@@ -384,8 +487,9 @@ function renderOverview() {
   $("queue-label").textContent = r.busy ? `正在合成 · 排队 ${r.queue}` : r.queue ? `排队 ${r.queue}` : "合成队列空闲";
   const mini = (label, value, bad) => h("span", { class: `mini ${bad && value ? "bad" : ""}` }, label, h("b", {}, value));
   $("pipe-foot").replaceChildren(
-    mini("合成出错", r.scheduler.failed, true), mini("合成超时", timeout, true), mini("排队过期", expired, true),
-    mini("失败合计", c.failed, true));
+    mini("角色主动", c.tool), mini("翻译", c.translated),
+    mini("LLM 失败", c.llm_failed, true), mini("合成出错", r.scheduler.failed, true),
+    mini("合成超时", timeout, true), mini("排队过期", expired, true), mini("失败合计", c.failed, true));
 
   renderEvents();
 }
@@ -402,12 +506,20 @@ function renderEvents() {
     ];
     if (event.mode) meta.push(h("span", {}, MODE_LABELS[event.mode] || event.mode));
     if (event.elapsed_ms != null) meta.push(h("span", { class: "num" }, `耗时 ${fmtMs(event.elapsed_ms)}`));
+    if (event.llm_ms != null) meta.push(h("span", { class: "num" }, `LLM ${fmtMs(event.llm_ms)}`));
+    const chip = SOURCE_CHIPS[event.source];
+    const tags = [
+      chip ? h("span", { class: `tag-chip ${chip[1]}` }, chip[0]) : null,
+      event.language ? h("span", { class: "tag-chip" }, languageLabel(event.language)) : null,
+    ].filter(Boolean);
+    const spokenDiffers = event.spoken && event.spoken !== event.text;
     return h("li", { class: `ev ${event.status}` },
       h("span", { class: "ev-icon" }, icon(status.icon)),
       h("div", {},
         h("p", { class: "ev-text" }, event.text ? `「${event.text}」` : h("em", {}, "（过滤后没有可朗读的内容）")),
-        h("div", { class: "ev-meta" }, meta),
-        event.detail ? h("div", { class: "ev-detail" }, event.detail) : null),
+        spokenDiffers ? h("p", { class: "ev-spoken" }, h("b", {}, "朗读"), event.spoken) : null,
+        h("div", { class: "ev-meta" }, tags, meta),
+        event.detail ? h("div", { class: `ev-detail ${event.status === "failed" ? "" : "soft"}` }, event.detail) : null),
       h("span", { class: `pill ${status.pill}` }, status.label));
   }));
   const total = app.model.runtime.events.length;
@@ -419,6 +531,7 @@ function renderEvents() {
 // ---------- 渲染：档案 ----------
 const profileForm = () => $("profile-form");
 let profileDirty;
+let profileDict;
 const tagInputs = {};
 
 function providerOptions(select, current, emptyLabel) {
@@ -462,6 +575,7 @@ function renderProfileList() {
         h("span", {}, "上限 ", h("b", {}, p.max_chars), " 字"),
         h("span", {}, "冷却 ", h("b", {}, p.cooldown), " 秒"),
         h("span", {}, MODE_LABELS[p.send_mode]),
+        p.voice_language ? h("span", {}, "语音 ", h("b", {}, languageLabel(p.voice_language))) : null,
         uses ? h("span", {}, h("b", {}, uses), " 个会话") : null)));
   }));
 }
@@ -482,6 +596,13 @@ function readProfileForm() {
     tts_provider_id: f.elements.tts_provider_id.value,
     force_phrases: tagInputs.force_phrases.get(),
     mute_phrases: tagInputs.mute_phrases.get(),
+    emotion_boost: Number(f.elements.emotion_boost.value),
+    emotion_markers: tagInputs.emotion_markers.get(),
+    tool_enabled: f.elements.tool_enabled.checked,
+    tool_interval: Number(f.elements.tool_interval.value),
+    voice_language: f.elements.voice_language.value,
+    voice_to_voice: f.elements.voice_to_voice.checked,
+    pronunciations: profileDict.get(),
   };
 }
 
@@ -513,6 +634,13 @@ function fillProfileForm(profile) {
   providerOptions(f.elements.tts_provider_id, profile.tts_provider_id, "跟随全局设置");
   tagInputs.force_phrases.set(profile.force_phrases);
   tagInputs.mute_phrases.set(profile.mute_phrases);
+  tagInputs.emotion_markers.set(profile.emotion_markers);
+  f.elements.emotion_boost.value = profile.emotion_boost;
+  f.elements.tool_enabled.checked = profile.tool_enabled;
+  f.elements.tool_interval.value = profile.tool_interval;
+  languageOptions(f.elements.voice_language, profile.voice_language);
+  f.elements.voice_to_voice.checked = profile.voice_to_voice;
+  profileDict.set(profile.pronunciations);
   updateProbability();
 
   const isDefault = !app.creating && profile.name === s.default_profile;
@@ -581,6 +709,75 @@ function renderGlobal({ force = false } = {}) {
   globalDirty.reset();
 }
 
+let langDirty;
+let dictDirty;
+let globalDict;
+
+function chatProviderOptions(select, current) {
+  const providers = app.model?.chat_providers || [];
+  select.replaceChildren(h("option", { value: "" }, "会话当前的对话模型"),
+    ...providers.map((p) => h("option", { value: p.id }, p.type ? `${p.id}（${p.type}）` : p.id)));
+  if (current && !providers.some((p) => p.id === current)) select.append(h("option", { value: current }, `${current}（当前不可用）`));
+  select.value = current || "";
+}
+
+function langRow(lang = { code: "", name: "", provider_id: "" }) {
+  const select = h("select", { "aria-label": "TTS 服务" });
+  providerOptions(select, lang.provider_id, "选择这个语言用的 TTS 服务");
+  const row = h("div", { class: "lang-row" },
+    h("input", { value: lang.code, maxlength: "16", placeholder: "代码，如 ja", "aria-label": "语言代码" }),
+    h("input", { value: lang.name, maxlength: "16", placeholder: "显示名，如 日语", "aria-label": "显示名" }),
+    select,
+    h("button", {
+      type: "button", class: "icon-ghost", title: "删除语言", "aria-label": "删除语言",
+      onclick: () => { row.remove(); langEmptyState(); langDirty.update(); },
+    }, icon("trash")));
+  return row;
+}
+
+function langEmptyState() {
+  const list = $("lang-list");
+  list.querySelector(".empty")?.remove();
+  list.querySelector(".lang-head")?.remove();
+  if (list.querySelector(".lang-row")) {
+    list.prepend(h("div", { class: "lang-head" }, h("span", {}, "代码"), h("span", {}, "显示名"), h("span", {}, "TTS 服务"), h("span")));
+  } else {
+    list.append(h("div", { class: "empty" }, h("p", {}, "还没有配置外语"),
+      h("small", {}, "例如在 AstrBot 里另建一个语言设为日语的 Genie TTS 条目，再点「添加语言」把它对应成 ja / 日语。")));
+  }
+}
+
+function readLangForm() {
+  const f = $("lang-form");
+  return {
+    voice_languages: $$(".lang-row", $("lang-list")).map((row) => {
+      const [code, name] = row.querySelectorAll("input");
+      return { code: code.value.trim(), name: name.value.trim(), provider_id: row.querySelector("select").value };
+    }),
+    llm_provider_id: f.elements.llm_provider_id.value,
+    llm_timeout: Number(f.elements.llm_timeout.value),
+    translate_fail: f.elements.translate_fail.value,
+  };
+}
+
+function renderLangForm({ force = false } = {}) {
+  if (!force && langDirty.dirty) return;
+  const s = app.model.settings;
+  $("lang-list").replaceChildren(...s.voice_languages.map((lang) => langRow(lang)));
+  langEmptyState();
+  const f = $("lang-form");
+  chatProviderOptions(f.elements.llm_provider_id, s.llm_provider_id);
+  f.elements.llm_timeout.value = s.llm_timeout;
+  f.elements.translate_fail.value = s.translate_fail;
+  langDirty.reset();
+}
+
+function renderGlobalDict({ force = false } = {}) {
+  if (!force && dictDirty.dirty) return;
+  globalDict.set(app.model.settings.pronunciations);
+  dictDirty.reset();
+}
+
 function umoPreview(container, value) {
   const parsed = parseUmo(value.trim());
   container.replaceChildren(...(parsed
@@ -641,8 +838,11 @@ function renderMuted() {
 
 // ---------- 渲染：试听 ----------
 function renderLabOptions() {
-  const select = $("lab-form").elements.profile;
-  profileOptions(select, select.value || app.model.settings.default_profile);
+  const lab = $("lab-form");
+  profileOptions(lab.elements.profile, lab.elements.profile.value || app.model.settings.default_profile);
+  const profile = app.model.settings.profiles[lab.elements.profile.value];
+  const current = lab.elements.language.value || "@profile";
+  languageOptions(lab.elements.language, current, { follow: `跟随档案（${languageLabel(profile?.voice_language || "")}）` });
 }
 
 function diffChars(source, target) {
@@ -708,6 +908,13 @@ function renderPreview(source, preview) {
   const spokenBox = $("spoken-box");
   spokenBox.classList.toggle("empty-speech", !preview.filtered);
   $("spoken").textContent = preview.filtered || "（过滤后没有可朗读的内容，不会合成）";
+  $("spoken-label").textContent = "正则过滤后";
+  const note = $("spoken-note");
+  note.className = "spoken-note";
+  note.hidden = !(preview.filtered && preview.uses_llm);
+  note.textContent = preview.language
+    ? `合成时会先经 LLM 翻译成${preview.language_name}，再按发音词典处理，点「合成试听」查看实际朗读。`
+    : "合成时会先经 LLM 口语化清洗，再按发音词典处理，点「合成试听」查看实际朗读。";
   const ratio = preview.max_chars ? preview.chars / preview.max_chars : 0;
   const over = preview.chars > preview.max_chars;
   $("meter").classList.toggle("over", over);
@@ -813,8 +1020,17 @@ async function loadAudio(result) {
   $("download").href = result.audio;
   $("player-meta").replaceChildren(
     h("span", { class: "mini" }, "服务 ", h("b", {}, result.provider_id)),
-    h("span", { class: "mini" }, "合成耗时 ", h("b", {}, fmtMs(result.elapsed_ms))),
+    h("span", { class: "mini" }, "语言 ", h("b", {}, result.language_name || "和文字相同")),
+    h("span", { class: "mini" }, "总耗时 ", h("b", {}, fmtMs(result.elapsed_ms))),
+    result.llm_ms != null ? h("span", { class: "mini" }, "其中 LLM ", h("b", {}, fmtMs(result.llm_ms))) : null,
     h("span", { class: "mini" }, "大小 ", h("b", {}, `${Math.max(1, Math.round(result.bytes / 1024))} KB`)));
+  // 实际朗读：经过 LLM 清洗 / 翻译和发音词典之后交给 TTS 的文字
+  $("spoken").textContent = result.text;
+  $("spoken-label").textContent = `实际朗读 · ${result.language_name || "和文字相同"}`;
+  const note = $("spoken-note");
+  note.hidden = !result.note && !result.llm_used;
+  note.className = `spoken-note ${result.note ? "warn" : ""}`;
+  note.textContent = result.note || (result.language ? "已由 LLM 翻译" : "已由 LLM 口语化清洗");
   player.peaks = null;
   drawWave();
   try {
@@ -839,6 +1055,8 @@ function renderAll(options = {}) {
   renderOverview();
   renderProfiles(options);
   renderGlobal(options);
+  renderLangForm(options);
+  renderGlobalDict(options);
   renderMappings(options);
   renderMuted();
   renderLabOptions();
@@ -886,6 +1104,9 @@ function labBody() {
     user_text: f.elements.user_text.value,
     profile: f.elements.profile.value,
     is_group: f.elements.scene.value === "group",
+    language: f.elements.language.value || "",
+    simulate_tool: f.elements.simulate_tool.checked,
+    simulate_voice: f.elements.simulate_voice.checked,
   };
 }
 
@@ -927,6 +1148,7 @@ function bind() {
   const f = profileForm();
   profileDirty = new Dirty($("profile-savebar"), readProfileForm);
   for (const container of $$("[data-tags]", f)) tagInputs[container.dataset.tags] = new TagInput(container, () => profileDirty.update());
+  profileDict = new DictEditor(f.querySelector('[data-dict="profile"]'), () => profileDirty.update());
   f.addEventListener("input", () => profileDirty.update());
   f.addEventListener("change", () => profileDirty.update());
   f.elements.probability.addEventListener("input", updateProbability);
@@ -1004,6 +1226,59 @@ function bind() {
     });
   });
 
+  // 语言与翻译
+  const lf = $("lang-form");
+  langDirty = new Dirty($("lang-savebar"), readLangForm);
+  lf.addEventListener("input", () => langDirty.update());
+  lf.addEventListener("change", () => langDirty.update());
+  $("add-language").addEventListener("click", () => {
+    const row = langRow();
+    $("lang-list").append(row);
+    langEmptyState();
+    langDirty.update();
+    row.querySelector("input").focus();
+  });
+  $("lang-reset").addEventListener("click", () => renderLangForm({ force: true }));
+  lf.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const data = readLangForm();
+    const seen = new Set();
+    for (const lang of data.voice_languages) {
+      if (!LANG_CODE.test(lang.code)) {
+        toast(`语言代码「${lang.code || "（空）"}」不合法：以字母开头，只用字母、数字、下划线或短横线`, "error");
+        return;
+      }
+      if (seen.has(lang.code)) {
+        toast(`语言代码「${lang.code}」重复了`, "error");
+        return;
+      }
+      seen.add(lang.code);
+    }
+    run(e.submitter, async () => {
+      applyState(await api("settings", "POST", data));
+      renderAll();
+      renderLangForm({ force: true });
+      toast("语言与翻译已保存");
+    });
+  });
+
+  // 全局发音词典
+  const df = $("dict-form");
+  dictDirty = new Dirty($("dict-savebar"), () => globalDict.get());
+  globalDict = new DictEditor(df.querySelector('[data-dict="global"]'), () => dictDirty.update());
+  df.addEventListener("input", () => dictDirty.update());
+  df.addEventListener("change", () => dictDirty.update());
+  $("dict-reset").addEventListener("click", () => renderGlobalDict({ force: true }));
+  df.addEventListener("submit", (e) => {
+    e.preventDefault();
+    run(e.submitter, async () => {
+      applyState(await api("settings", "POST", { pronunciations: globalDict.get() }));
+      renderAll();
+      renderGlobalDict({ force: true });
+      toast("发音词典已保存");
+    });
+  });
+
   mappingDirty = new Dirty($("mapping-savebar"), readMappings);
   $("add-mapping").addEventListener("click", () => {
     const row = mappingRow();
@@ -1043,6 +1318,7 @@ function bind() {
     e.preventDefault();
     previewLab(e.submitter);
   });
+  lab.elements.profile.addEventListener("change", () => { if (app.model) renderLabOptions(); });
   lab.elements.text.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
@@ -1059,7 +1335,7 @@ function bind() {
     $("app").classList.add("is-busy");
     await run(button, async () => {
       renderPreview(body.text, await api("preview", "POST", body));
-      await loadAudio(await api("synthesize", "POST", { text: body.text, profile: body.profile, filter: true }));
+      await loadAudio(await api("synthesize", "POST", { text: body.text, profile: body.profile, language: body.language, filter: true }));
     });
     if (app.model) renderChrome();
   });
@@ -1082,7 +1358,7 @@ function bind() {
   window.addEventListener("resize", () => { if (!$("player-card").hidden) drawWave(); });
 
   window.addEventListener("beforeunload", (e) => {
-    if (profileDirty.dirty || globalDirty.dirty || mappingDirty.dirty) {
+    if ([profileDirty, globalDirty, langDirty, dictDirty, mappingDirty].some((d) => d.dirty)) {
       e.preventDefault();
       e.returnValue = "";
     }
