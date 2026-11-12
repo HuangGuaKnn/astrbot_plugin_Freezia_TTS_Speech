@@ -4,4 +4,4 @@
 """
 
 PLUGIN_NAME = "astrbot_plugin_Freezia_TTS_Speech"
-VERSION = "0.2.0"
+VERSION = "0.1.1"

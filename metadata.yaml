@@ -8,7 +8,7 @@ desc: >-
   经发音词典处理后调用 AstrBot 中已配置的 TTS 服务（Genie、GSVI、OpenAI TTS 等）合成，可按情绪切换不同参考音频的服务。
   串行合成、超时与过期自动降级为纯文字。设置通过内置 WebUI 管理。
 author: iownmmiku
-version: 0.2.0
+version: 0.1.1
 repo: https://github.com/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech
 astrbot_version: ">=4.24,<5"
 tags:
