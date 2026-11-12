@@ -19,6 +19,17 @@ DEFAULT_PROFILE = "default"
 DEFAULT_FORCE_PHRASES = ["说给我听", "念给我听", "用语音说", "出声"]
 DEFAULT_MUTE_PHRASES = ["别出声", "不要出声", "打字就好", "别用语音"]
 DEFAULT_EMOTION_MARKERS = ["！", "!", "♡", "❤", "哈哈"]
+# 情绪音色可选的情绪（固定一组，方便写进工具说明和提示词）；neutral 表示用默认声音
+EMOTIONS = {
+    "happy": "开心",
+    "sad": "难过",
+    "angry": "生气",
+    "surprised": "惊讶",
+    "shy": "害羞",
+    "gentle": "温柔",
+}
+NEUTRAL = "neutral"
+NEUTRAL_NAME = "平静"
 
 _PROFILE_NAME = re.compile(r"^[\w\-一-鿿]{1,32}$")
 _LANGUAGE_CODE = re.compile(r"^[A-Za-z][\w\-]{0,15}$")
@@ -108,6 +119,25 @@ def _pronunciations(value: Any) -> list[dict[str, str]]:
     return result
 
 
+def _emotion_voices(value: Any) -> list[dict[str, Any]]:
+    """情绪音色：{"emotion": 情绪代码, "provider_id": 该情绪用的 TTS 服务, "markers": 判断用的符号}。"""
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        emotion = str(item.get("emotion") or "").strip()
+        if emotion not in EMOTIONS or any(entry["emotion"] == emotion for entry in result):
+            continue
+        result.append({
+            "emotion": emotion,
+            "provider_id": str(item.get("provider_id") or "").strip()[:128],
+            "markers": _phrases(item.get("markers"), []),
+        })
+    return result
+
+
 def _languages(value: Any) -> list[dict[str, str]]:
     """语音语言对照：{"code": 语言代码, "name": 显示名, "provider_id": 该语言用的 TTS 服务}。"""
     if not isinstance(value, list):
@@ -137,6 +167,8 @@ class Profile:
     enabled: bool = True
     probability: float = 0.2
     max_chars: int = 80
+    # 朗读字数上限：过滤后超过时由 LLM 另写一段不超过这个字数的短版来念（文字照发全文）；0 表示不限制
+    speak_max_chars: int = 80
     cooldown: int = 30
     send_mode: str = "both"
     group_force_both: bool = True
@@ -158,6 +190,11 @@ class Profile:
     emotion_markers: list[str] = field(default_factory=lambda: list(DEFAULT_EMOTION_MARKERS))
     # 档案自己的发音词典，与全局词典合并，同一原文以档案为准
     pronunciations: list[dict[str, str]] = field(default_factory=list)
+    # 情绪 → TTS 服务（同一角色不同参考音频的条目）。只在念和文字相同的语言时切换
+    emotion_voices: list[dict[str, Any]] = field(default_factory=list)
+
+    def emotion_voice(self, emotion: str) -> dict[str, Any] | None:
+        return next((entry for entry in self.emotion_voices if entry["emotion"] == emotion), None)
 
     @classmethod
     def from_dict(cls, data: Any, name: str | None = None) -> Profile:
@@ -171,6 +208,7 @@ class Profile:
             enabled=_bool(data.get("enabled"), base.enabled),
             probability=_number(data.get("probability"), base.probability, 0.0, 1.0),
             max_chars=_int(data.get("max_chars"), base.max_chars, 1, 2000),
+            speak_max_chars=_int(data.get("speak_max_chars"), base.speak_max_chars, 0, 2000),
             cooldown=_int(data.get("cooldown"), base.cooldown, 0, 86400),
             send_mode=_choice(data.get("send_mode"), SEND_MODES, base.send_mode),
             group_force_both=_bool(data.get("group_force_both"), base.group_force_both),
@@ -189,6 +227,7 @@ class Profile:
             emotion_boost=_number(data.get("emotion_boost"), base.emotion_boost, 1.0, 5.0),
             emotion_markers=_phrases(data.get("emotion_markers"), base.emotion_markers),
             pronunciations=_pronunciations(data.get("pronunciations")),
+            emotion_voices=_emotion_voices(data.get("emotion_voices")),
         )
 
     def to_dict(self) -> dict[str, Any]:

@@ -21,6 +21,16 @@ const SOURCE_CHIPS = {
   tool: ["角色主动", "tool"],
   voice: ["语音对语音", "voice"],
 };
+const EMOTION_SOURCES = { tool: "角色指定", llm: "LLM 判断", marker: "符号", manual: "手动" };
+// 新增情绪行时预填的判断符号，只是建议，可以改
+const EMOTION_HINTS = {
+  happy: ["哈哈", "嘿嘿", "好耶"],
+  sad: ["呜", "难过", "哭"],
+  angry: ["哼", "生气", "讨厌"],
+  surprised: ["诶", "欸", "居然"],
+  shy: ["♡", "害羞", "脸红"],
+  gentle: ["乖", "摸摸", "没事的"],
+};
 const LANG_CODE = /^[A-Za-z][\w-]{0,15}$/;
 const STAGE_LABELS = {
   plugin: "插件开关", profile: "档案开关", session: "会话静音", send_mode: "发送方式", mute: "不出声短语",
@@ -351,6 +361,83 @@ class DictEditor {
   }
 }
 
+// ---------- 情绪音色 ----------
+function emotions() {
+  return app.model?.emotions || [];
+}
+
+function emotionName(code) {
+  if (code === "neutral") return "平静";
+  return emotions().find((e) => e.code === code)?.name || code;
+}
+
+function emotionChip(code, source) {
+  if (!code) return null;
+  const from = EMOTION_SOURCES[source];
+  return h("span", { class: "tag-chip mood", title: from ? `情绪来源：${from}` : "" }, emotionName(code), from ? h("small", {}, from) : null);
+}
+
+class EmotionEditor {
+  constructor(container, onChange) {
+    this.onChange = onChange;
+    this.head = h("div", { class: "emo-head" }, h("span", {}, "情绪"), h("span", {}, "TTS 服务"), h("span", {}, "判断符号（逗号分隔）"), h("span"));
+    this.rows = h("div", { class: "emo-rows" });
+    this.empty = h("span", { class: "muted small" }, "还没有配置，所有回复都用默认声音");
+    this.add = h("button", {
+      type: "button", class: "btn ghost small",
+      onclick: () => {
+        const used = new Set(this.get().map((entry) => entry.emotion));
+        const next = emotions().find((e) => !used.has(e.code));
+        if (!next) return;
+        this.addRow({ emotion: next.code, provider_id: "", markers: EMOTION_HINTS[next.code] || [] });
+        this.changed();
+        this.rows.lastElementChild?.querySelectorAll("select")[1]?.focus();
+      },
+    }, icon("plus"), "添加情绪");
+    container.replaceChildren(this.head, this.rows, h("div", { class: "dict-foot" }, this.add, this.empty));
+  }
+  changed() {
+    this.sync();
+    this.onChange();
+  }
+  sync() {
+    const count = this.rows.children.length;
+    this.head.hidden = count === 0;
+    this.empty.hidden = count > 0;
+    this.add.disabled = count >= emotions().length;
+  }
+  addRow(entry) {
+    const mood = h("select", { "aria-label": "情绪" }, ...emotions().map((e) => h("option", { value: e.code }, e.name)));
+    mood.value = entry.emotion;
+    const provider = h("select", { "aria-label": "TTS 服务" });
+    providerOptions(provider, entry.provider_id, "选择这个情绪用的服务");
+    const markers = h("input", { value: (entry.markers || []).join("，"), placeholder: "判断符号，逗号分隔，如 哈哈，嘿嘿", title: "判断符号（逗号分隔）", "aria-label": "判断符号" });
+    let hinted = (entry.markers || []).join("，") === (EMOTION_HINTS[entry.emotion] || []).join("，");
+    mood.addEventListener("change", () => {
+      // 符号还是上一个情绪的建议值时，跟着换成新情绪的建议
+      if (hinted || !markers.value.trim()) markers.value = (EMOTION_HINTS[mood.value] || []).join("，");
+      hinted = true;
+    });
+    markers.addEventListener("input", () => { hinted = false; });
+    const row = h("div", { class: "emo-row" }, mood, provider, markers,
+      h("button", { type: "button", class: "icon-ghost", title: "删除", "aria-label": "删除情绪", onclick: () => { row.remove(); this.changed(); } }, icon("trash")));
+    this.rows.append(row);
+    this.sync();
+  }
+  set(entries) {
+    this.rows.replaceChildren();
+    for (const entry of entries || []) this.addRow(entry);
+    this.sync();
+  }
+  get() {
+    return [...this.rows.children].map((row) => {
+      const [mood, provider] = row.querySelectorAll("select");
+      const markers = row.querySelector("input").value.split(/[,，\n]/).map((s) => s.trim()).filter(Boolean);
+      return { emotion: mood.value, provider_id: provider.value, markers };
+    });
+  }
+}
+
 // ---------- 状态与检查 ----------
 function healthChecks(model) {
   const d = model.diagnostics || {};
@@ -394,6 +481,14 @@ function healthChecks(model) {
   } else if (s.voice_languages.length) {
     list.push({ state: "ok", title: `外语语音：${s.voice_languages.map((l) => l.name).join("、")}`, text: `翻译用${s.llm_provider_id ? `「${s.llm_provider_id}」` : "会话当前的对话模型"}，超时 ${s.llm_timeout} 秒` });
   }
+  const moodIssues = [];
+  for (const [name, profile] of Object.entries(s.profiles)) {
+    for (const entry of profile.emotion_voices || []) {
+      if (!entry.provider_id) moodIssues.push(`档案「${name}」的「${emotionName(entry.emotion)}」没有指定 TTS 服务`);
+      else if (!model.providers.some((p) => p.id === entry.provider_id)) moodIssues.push(`档案「${name}」的「${emotionName(entry.emotion)}」用的「${entry.provider_id}」不可用，会改用默认声音`);
+    }
+  }
+  if (moodIssues.length) list.push({ state: "warn", title: "情绪音色配置有问题", text: `${moodIssues.join("；")}。请在「发声档案」检查。` });
   return list;
 }
 
@@ -487,7 +582,7 @@ function renderOverview() {
   $("queue-label").textContent = r.busy ? `正在合成 · 排队 ${r.queue}` : r.queue ? `排队 ${r.queue}` : "合成队列空闲";
   const mini = (label, value, bad) => h("span", { class: `mini ${bad && value ? "bad" : ""}` }, label, h("b", {}, value));
   $("pipe-foot").replaceChildren(
-    mini("角色主动", c.tool), mini("翻译", c.translated),
+    mini("角色主动", c.tool), mini("翻译", c.translated), mini("缩写", c.shortened ?? 0),
     mini("LLM 失败", c.llm_failed, true), mini("合成出错", r.scheduler.failed, true),
     mini("合成超时", timeout, true), mini("排队过期", expired, true), mini("失败合计", c.failed, true));
 
@@ -511,6 +606,7 @@ function renderEvents() {
     const tags = [
       chip ? h("span", { class: `tag-chip ${chip[1]}` }, chip[0]) : null,
       event.language ? h("span", { class: "tag-chip" }, languageLabel(event.language)) : null,
+      emotionChip(event.emotion, event.emotion_source),
     ].filter(Boolean);
     const spokenDiffers = event.spoken && event.spoken !== event.text;
     return h("li", { class: `ev ${event.status}` },
@@ -532,6 +628,7 @@ function renderEvents() {
 const profileForm = () => $("profile-form");
 let profileDirty;
 let profileDict;
+let emotionEditor;
 const tagInputs = {};
 
 function providerOptions(select, current, emptyLabel) {
@@ -576,6 +673,7 @@ function renderProfileList() {
         h("span", {}, "冷却 ", h("b", {}, p.cooldown), " 秒"),
         h("span", {}, MODE_LABELS[p.send_mode]),
         p.voice_language ? h("span", {}, "语音 ", h("b", {}, languageLabel(p.voice_language))) : null,
+        p.emotion_voices?.length ? h("span", {}, "情绪 ", h("b", {}, p.emotion_voices.length), " 种") : null,
         uses ? h("span", {}, h("b", {}, uses), " 个会话") : null)));
   }));
 }
@@ -587,6 +685,7 @@ function readProfileForm() {
     enabled: f.elements.enabled.checked,
     probability: Number(f.elements.probability.value),
     max_chars: Number(f.elements.max_chars.value),
+    speak_max_chars: Number(f.elements.speak_max_chars.value),
     cooldown: Number(f.elements.cooldown.value),
     send_mode: f.elements.send_mode.value,
     group_force_both: f.elements.group_force_both.checked,
@@ -603,6 +702,7 @@ function readProfileForm() {
     voice_language: f.elements.voice_language.value,
     voice_to_voice: f.elements.voice_to_voice.checked,
     pronunciations: profileDict.get(),
+    emotion_voices: emotionEditor.get(),
   };
 }
 
@@ -625,6 +725,7 @@ function fillProfileForm(profile) {
   f.elements.enabled.checked = profile.enabled;
   f.elements.probability.value = profile.probability;
   f.elements.max_chars.value = profile.max_chars;
+  f.elements.speak_max_chars.value = profile.speak_max_chars;
   f.elements.cooldown.value = profile.cooldown;
   f.elements.send_mode.value = profile.send_mode;
   f.elements.group_force_both.checked = profile.group_force_both;
@@ -641,6 +742,7 @@ function fillProfileForm(profile) {
   languageOptions(f.elements.voice_language, profile.voice_language);
   f.elements.voice_to_voice.checked = profile.voice_to_voice;
   profileDict.set(profile.pronunciations);
+  emotionEditor.set(profile.emotion_voices);
   updateProbability();
 
   const isDefault = !app.creating && profile.name === s.default_profile;
@@ -843,6 +945,14 @@ function renderLabOptions() {
   const profile = app.model.settings.profiles[lab.elements.profile.value];
   const current = lab.elements.language.value || "@profile";
   languageOptions(lab.elements.language, current, { follow: `跟随档案（${languageLabel(profile?.voice_language || "")}）` });
+  const mood = lab.elements.emotion;
+  const picked = mood.value;
+  mood.replaceChildren(h("option", { value: "" }, "自动判断"),
+    ...emotions().map((e) => h("option", { value: e.code }, e.name)),
+    h("option", { value: "neutral" }, "平静（默认声音）"));
+  mood.value = picked;
+  mood.disabled = !profile?.emotion_voices?.length;
+  mood.title = mood.disabled ? "这个档案没有配置情绪音色" : "";
 }
 
 function diffChars(source, target) {
@@ -912,14 +1022,21 @@ function renderPreview(source, preview) {
   const note = $("spoken-note");
   note.className = "spoken-note";
   note.hidden = !(preview.filtered && preview.uses_llm);
-  note.textContent = preview.language
-    ? `合成时会先经 LLM 翻译成${preview.language_name}，再按发音词典处理，点「合成试听」查看实际朗读。`
-    : "合成时会先经 LLM 口语化清洗，再按发音词典处理，点「合成试听」查看实际朗读。";
+  const steps = [];
+  if (preview.will_shorten) steps.push(`另写一段 ${preview.speak_max_chars} 字以内的短版`);
+  if (preview.language) {
+    const budget = !preview.will_shorten && preview.speak_max_chars ? `（译文不超过约 ${preview.speak_max_chars} 字，超出时截到句末）` : "";
+    steps.push(`翻译成${preview.language_name}${budget}`);
+  }
+  if (!steps.length) steps.push("口语化清洗");
+  note.textContent = `合成时会先经 LLM ${steps.join("并")}，再按发音词典处理，点「合成试听」查看实际朗读。`
+    + (preview.will_shorten ? `过滤后 ${preview.chars} 字，超过朗读上限，文字照发全文。` : "");
   const ratio = preview.max_chars ? preview.chars / preview.max_chars : 0;
   const over = preview.chars > preview.max_chars;
   $("meter").classList.toggle("over", over);
   $("meter-fill").style.width = `${Math.min(100, ratio * 100)}%`;
   $("meter-label").textContent = `${preview.chars} / ${preview.max_chars} 字${over ? " · 超过被动上限" : ""}`;
+  renderMoodLine(preview);
 
   $("trace-card").hidden = false;
   $("trace").replaceChildren(...d.trace.map((step) => {
@@ -929,6 +1046,25 @@ function renderPreview(source, preview) {
       h("span", { class: "t-label" }, step.label),
       h("span", { class: "t-note" }, step.note || meta.text));
   }));
+}
+
+// 情绪与将要使用的服务。档案没配情绪音色时不显示
+function renderMoodLine(preview) {
+  const line = $("mood-line");
+  line.hidden = !preview.emotion_voices || !preview.filtered;
+  if (line.hidden) return;
+  const voice = preview.voice_provider ? h("span", {}, "用 ", h("b", {}, preview.voice_provider)) : null;
+  let parts;
+  if (preview.language) {
+    parts = [h("span", {}, `念${preview.language_name}时不切换情绪音色`), voice];
+  } else if (preview.emotion) {
+    const from = preview.emotion_source === "marker" ? `符号「${preview.emotion_marker}」` : EMOTION_SOURCES[preview.emotion_source] || "";
+    parts = [emotionChip(preview.emotion, ""), h("span", { class: "muted" }, from), voice,
+      preview.llm_emotion ? h("span", { class: "muted" }, "· 合成时由 LLM 重新判断") : null];
+  } else {
+    parts = [h("span", {}, preview.llm_emotion ? "合成时由 LLM 判断情绪" : "没有判断出情绪，用默认声音"), voice];
+  }
+  line.replaceChildren(icon("spark"), ...parts.filter(Boolean));
 }
 
 // ---------- 播放器 ----------
@@ -1018,18 +1154,22 @@ async function loadAudio(result) {
   $("player-card").hidden = false;
   audio.src = result.audio;
   $("download").href = result.audio;
-  $("player-meta").replaceChildren(
+  // replaceChildren 会把 null 变成文字「null」，先滤掉
+  $("player-meta").replaceChildren(...[
     h("span", { class: "mini" }, "服务 ", h("b", {}, result.provider_id)),
     h("span", { class: "mini" }, "语言 ", h("b", {}, result.language_name || "和文字相同")),
+    result.emotion ? h("span", { class: "mini" }, "情绪 ", h("b", {}, result.emotion_name), EMOTION_SOURCES[result.emotion_source] ? `（${EMOTION_SOURCES[result.emotion_source]}）` : "") : null,
     h("span", { class: "mini" }, "总耗时 ", h("b", {}, fmtMs(result.elapsed_ms))),
     result.llm_ms != null ? h("span", { class: "mini" }, "其中 LLM ", h("b", {}, fmtMs(result.llm_ms))) : null,
-    h("span", { class: "mini" }, "大小 ", h("b", {}, `${Math.max(1, Math.round(result.bytes / 1024))} KB`)));
+    h("span", { class: "mini" }, "大小 ", h("b", {}, `${Math.max(1, Math.round(result.bytes / 1024))} KB`)),
+  ].filter(Boolean));
   // 实际朗读：经过 LLM 清洗 / 翻译和发音词典之后交给 TTS 的文字
   $("spoken").textContent = result.text;
   $("spoken-label").textContent = `实际朗读 · ${result.language_name || "和文字相同"}`;
   const note = $("spoken-note");
   note.hidden = !result.note && !result.llm_used;
-  note.className = `spoken-note ${result.note ? "warn" : ""}`;
+  // 缩写成功之类的说明不算警告，只有失败、不可用才标成警告色
+  note.className = `spoken-note ${/失败|不可用/.test(result.note || "") ? "warn" : ""}`;
   note.textContent = result.note || (result.language ? "已由 LLM 翻译" : "已由 LLM 口语化清洗");
   player.peaks = null;
   drawWave();
@@ -1105,6 +1245,7 @@ function labBody() {
     profile: f.elements.profile.value,
     is_group: f.elements.scene.value === "group",
     language: f.elements.language.value || "",
+    emotion: f.elements.emotion.disabled ? "" : f.elements.emotion.value,
     simulate_tool: f.elements.simulate_tool.checked,
     simulate_voice: f.elements.simulate_voice.checked,
   };
@@ -1149,6 +1290,7 @@ function bind() {
   profileDirty = new Dirty($("profile-savebar"), readProfileForm);
   for (const container of $$("[data-tags]", f)) tagInputs[container.dataset.tags] = new TagInput(container, () => profileDirty.update());
   profileDict = new DictEditor(f.querySelector('[data-dict="profile"]'), () => profileDirty.update());
+  emotionEditor = new EmotionEditor($("emotion-editor"), () => profileDirty.update());
   f.addEventListener("input", () => profileDirty.update());
   f.addEventListener("change", () => profileDirty.update());
   f.elements.probability.addEventListener("input", updateProbability);
@@ -1178,6 +1320,12 @@ function bind() {
     if (!profile.name) {
       toast("请填写档案名", "error");
       f.elements.name.focus();
+      return;
+    }
+    const moods = profile.emotion_voices.map((entry) => entry.emotion);
+    const repeated = moods.find((mood, index) => moods.indexOf(mood) !== index);
+    if (repeated) {
+      toast(`情绪「${emotionName(repeated)}」重复了，每种情绪只能对应一个服务`, "error");
       return;
     }
     run(e.submitter, async () => {
@@ -1335,7 +1483,7 @@ function bind() {
     $("app").classList.add("is-busy");
     await run(button, async () => {
       renderPreview(body.text, await api("preview", "POST", body));
-      await loadAudio(await api("synthesize", "POST", { text: body.text, profile: body.profile, language: body.language, filter: true }));
+      await loadAudio(await api("synthesize", "POST", { text: body.text, profile: body.profile, language: body.language, emotion: body.emotion, filter: true }));
     });
     if (app.model) renderChrome();
   });

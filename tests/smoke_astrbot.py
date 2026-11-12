@@ -61,6 +61,8 @@ async def run_smoke(isolation: Path) -> None:
     from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
     from astrbot.core.persona_mgr import PersonaManager
     from astrbot.core.pipeline.context import PipelineContext
+    from astrbot.core.pipeline.context_utils import call_event_hook
+    from astrbot.core.pipeline.preprocess_stage.stage import PreProcessStage
     from astrbot.core.pipeline.process_stage.stage import StarRequestSubStage
     from astrbot.core.pipeline.result_decorate.stage import ResultDecorateStage
     from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
@@ -229,6 +231,8 @@ async def run_smoke(isolation: Path) -> None:
         names = {h.handler_name for h in handlers}
         decorating = [h for h in handlers if h.event_type == EventType.OnDecoratingResultEvent]
         assert [h.handler_name for h in decorating] == ["on_decorating_result"]
+        after_sent = [h for h in handlers if h.event_type == EventType.OnAfterMessageSentEvent]
+        assert [h.handler_name for h in after_sent] == ["after_message_sent"]
         assert {"ftts_status", "ftts_on", "ftts_off", "ftts_say"} <= names
         checks.append("on_decorating_result 钩子与 /ftts 指令组注册到真实 star_handlers_registry")
 
@@ -334,9 +338,10 @@ async def run_smoke(isolation: Path) -> None:
         assert getattr(tool.handler, "__module__", "") == module  # handler_module_path 由插件管理器加载时补上
         properties = tool.parameters["properties"]
         assert properties["language"]["type"] == "string" and "ja" in properties["language"]["description"]
-        assert "language" not in tool.parameters.get("required", [])
+        assert properties["emotion"]["type"] == "string" and "happy" in properties["emotion"]["description"]
+        assert not {"language", "emotion"} & set(tool.parameters.get("required", []))
         assert "普通闲聊不要调用" in tool.description
-        checks.append("llm_tool 注册到真实 FunctionToolManager，文档字符串解析出 language(string) 参数")
+        checks.append("llm_tool 注册到真实 FunctionToolManager，文档字符串解析出 language、emotion 两个可选 string 参数")
 
         await request_api("settings", "POST", {
             "voice_languages": [{"code": "ja", "name": "日语", "provider_id": "offline_genie_ja"}],
@@ -346,7 +351,7 @@ async def run_smoke(isolation: Path) -> None:
         chat.reply = "おやすみ～"
         event = make_event("晚安")
         reply = json.loads(await plugin.freezia_voice_reply(event, language="日语"))
-        assert reply["ok"] and event.get_extra(main_mod.VOICE_REQUEST_KEY) == {"language": "ja"}
+        assert reply["ok"] and event.get_extra(main_mod.VOICE_REQUEST_KEY) == {"language": "ja", "emotion": ""}
         result = MessageEventResult()
         result.message("（小声）晚安～").set_result_content_type(ResultContentType.LLM_RESULT)
         event.set_result(result)
@@ -378,6 +383,92 @@ async def run_smoke(isolation: Path) -> None:
         assert len(tts_main.texts) == tts_count + 1 and tts_main.texts[-1] == "听到你的声音啦"
         assert plugin.engine.events[0]["source"] == "voice"
         checks.append("用户消息里的真实 Record 组件触发语音回复")
+
+        # ---- 开启语音转文字：预处理阶段先把语音换成文字 ----
+        class OfflineSTT:
+            def __init__(self):
+                self.paths = []
+
+            async def get_text(self, audio_url: str) -> str:
+                self.paths.append(audio_url)
+                return "你好呀"
+
+        stt = OfflineSTT()
+
+        async def using_stt(_umo):
+            return stt
+
+        stt_config = dict(config, provider_stt_settings={"enable": True, "provider_id": "offline_stt"})
+        preprocess = PreProcessStage()
+        await preprocess.initialize(PipelineContext(
+            stt_config, SimpleNamespace(context=SimpleNamespace(get_using_stt_provider_async=using_stt)),
+            "offline-smoke", db_helper=None,
+        ))
+        incoming = isolation / "incoming_stt.wav"
+        write_tone(incoming)
+        stt_event = make_event("", sender="stt-user", components=[Record(file=str(incoming))])
+        # OneBot（aiocqhttp）数组格式的原始消息
+        stt_event.message_obj.raw_message = {"message": [{"type": "record", "data": {"file": str(incoming)}}]}
+        await preprocess.process(stt_event)
+        assert stt.paths and not any(isinstance(c, Record) for c in stt_event.get_messages())
+        assert stt_event.message_str == "你好呀"
+        result = MessageEventResult()
+        result.message("嗯嗯，我在听").set_result_content_type(ResultContentType.LLM_RESULT)
+        stt_event.set_result(result)
+        async for _ in decorate.process(stt_event):
+            pass
+        await drain()
+        assert tts_main.texts[-1] == "嗯嗯，我在听" and plugin.engine.events[0]["source"] == "voice"
+        checks.append("开启语音转文字时，真实 PreProcessStage 把消息链里的语音换成文字；插件按平台原始消息仍识别出语音并用语音回复")
+
+        # ---- 情绪音色 ----
+        tts_sad = OfflineTTS("offline_genie_sad")
+        providers.tts_provider_insts.append(tts_sad)
+        providers.inst_map[tts_sad.meta().id] = tts_sad
+        await set_profile(emotion_voices=[{"emotion": "sad", "provider_id": "offline_genie_sad", "markers": ["呜"]}])
+        event = make_event("我今天好难过", sender="sad-user")
+        reply = json.loads(await plugin.freezia_voice_reply(event, emotion="难过"))
+        assert reply["ok"] and reply["emotion"] == "sad", reply
+        result = MessageEventResult()
+        result.message("没关系，我一直在").set_result_content_type(ResultContentType.LLM_RESULT)
+        event.set_result(result)
+        async for _ in decorate.process(event):
+            pass
+        await drain()
+        assert tts_sad.texts == ["没关系，我一直在"], tts_sad.texts
+        record = plugin.engine.events[0]
+        assert (record["emotion"], record["emotion_source"], record["provider_id"]) == ("sad", "tool", "offline_genie_sad")
+        await set_profile(probability=1.0)
+        await decorate_reply("（小声哭）呜……你终于回来了")
+        assert tts_sad.texts[-1] == "呜……你终于回来了", (tts_sad.texts, plugin.engine.events[0])
+        assert plugin.engine.events[0]["emotion_source"] == "marker"
+        checks.append("工具指定「难过」与回复里的情绪符号都会改用难过音色的 TTS 条目合成")
+
+        # ---- 长回复缩写 ----
+        await set_profile(send_mode="voice_only", speak_max_chars=12, emotion_voices=[], probability=0.0)
+        chat.reply = "博士，作战顺利，晚上见～"
+        long_reply = "博士，今天的作战非常顺利，大家都平安回来了。晚上食堂有庆功宴，记得早点过来，我会给你留位置的。"
+        sent_before = len(recording.sent)
+        event = await decorate_reply(long_reply, "说给我听")
+        assert [c.text for c in event.get_result().chain if isinstance(c, Plain)] == [long_reply]
+        assert tts_main.texts[-1] == "博士，作战顺利，晚上见～", tts_main.texts[-1]
+        assert "不超过 12 字" in chat.calls[-1]["system_prompt"]
+        assert len(recording.sent) == sent_before + 1 and isinstance(recording.sent[-1][1].chain[0], Record)
+        assert plugin.engine.events[0]["mode"] == "both"
+        checks.append("「仅语音」遇到超长回复：文字照发全文，Context.llm_generate 写的短版另行合成发送")
+
+        # ---- 译文超过朗读上限：「仅语音」也先发文字，再由真实的发送后钩子补发语音 ----
+        await set_profile(send_mode="voice_only", speak_max_chars=10, voice_language="ja")
+        chat.reply = "ドクター！やっと戻られたんですね！今日の作戦は本当に順調でした。"
+        sent_before = len(recording.sent)
+        event = await decorate_reply("博士，欢迎回来。", "说给我听")
+        assert [c.text for c in event.get_result().chain if isinstance(c, Plain)] == ["博士，欢迎回来。"]
+        assert len(recording.sent) == sent_before, "文字发出之前不应先发语音"
+        assert "长度不超过 10 个字" in chat.calls[-1]["system_prompt"]
+        await call_event_hook(event, EventType.OnAfterMessageSentEvent)
+        assert len(recording.sent) == sent_before + 1 and isinstance(recording.sent[-1][1].chain[0], Record)
+        assert tts_ja.texts[-1] == "ドクター！", tts_ja.texts[-1]
+        checks.append("译文超过朗读上限时截到句末；「仅语音」保留文字，语音经真实 OnAfterMessageSentEvent 钩子在文字之后补发")
     finally:
         await plugin.terminate()
         await db_helper.engine.dispose()

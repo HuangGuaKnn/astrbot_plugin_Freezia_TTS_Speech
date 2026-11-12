@@ -13,14 +13,19 @@ from typing import Any, Protocol
 
 from .decide import Decision, contains_any, decide, effective_send_mode, find_emotion
 from .scheduler import SynthExpired, SynthScheduler, SynthTimeout
-from .settings import Profile, Settings, SettingsStore
+from .settings import EMOTIONS, NEUTRAL, Profile, Settings, SettingsStore
 from .speech import (
     MAX_LLM_INPUT,
     apply_pronunciations,
     build_prompt,
     clean_output,
+    emotion_by_markers,
     entries_for,
     merged_pronunciations,
+    normalize_emotion,
+    speech_length,
+    split_emotion,
+    truncate_sentences,
 )
 from .text_filter import clean_for_tts, normalize_only
 
@@ -28,6 +33,8 @@ MAX_EVENTS = 100
 PREVIEW_CHARS = 60
 SOURCE_BY_CODE = {"force_phrase": "user", "tool_request": "tool", "voice_message": "voice"}
 _SAME_LANGUAGE = {"", "auto", "same", "default", "原文", "跟随"}
+# 情绪来源：tool 角色调用工具时指定；manual 试听时手动选；llm 清洗时模型判断；marker 按符号粗判
+FIXED_EMOTION_SOURCES = ("tool", "manual")
 
 
 class Host(Protocol):
@@ -58,6 +65,9 @@ class Spoken:
     llm_used: bool = False
     llm_ms: int | None = None
     note: str = ""
+    emotion: str = ""  # 空表示没有判断情绪（档案没配情绪音色或念外语）
+    emotion_source: str = ""
+    shortened: bool = False  # 念的是缩写或截取后的内容，不是全文
 
 
 @dataclass
@@ -71,10 +81,33 @@ class Plan:
     language: str = ""
     source: str = "passive"
     previous_voice_at: float | None = None
+    emotion: str = ""
+    emotion_source: str = ""
+    shortened: bool = False  # 合成后填写：语音不是全文
 
 
 def filter_text(profile: Profile, text: str) -> str:
     return normalize_only(text) if profile.filter_mode == "off" else clean_for_tts(text)
+
+
+def needs_shortening(profile: Profile, text: str) -> bool:
+    """过滤后超过朗读字数上限：要另写一段短版来念。"""
+    return bool(profile.speak_max_chars) and len(text) > profile.speak_max_chars
+
+
+def guess_emotion(profile: Profile, raw_text: str) -> tuple[str, str, str]:
+    """按符号粗判情绪（用过滤前的原文，括号里的「哭」「笑」也算）。返回 (情绪, 来源, 命中的符号)。
+
+    档案没配情绪音色时不判断，全部为空。
+    """
+    if not profile.emotion_voices:
+        return "", "", ""
+    hit = emotion_by_markers(profile.emotion_voices, raw_text)
+    return (hit[0], "marker", hit[1]) if hit else ("", "", "")
+
+
+def emotion_label(code: str) -> str:
+    return EMOTIONS.get(code) or ("平静" if code == NEUTRAL else code)
 
 
 def _short(text: str) -> str:
@@ -97,7 +130,7 @@ class Engine:
         self._event_ids = itertools.count(1)
         self.counters = {
             "decided": 0, "speak": 0, "sent": 0, "failed": 0,
-            "tool": 0, "translated": 0, "llm_failed": 0,
+            "tool": 0, "translated": 0, "shortened": 0, "llm_failed": 0,
         }
 
     # ---------- 配置 ----------
@@ -130,9 +163,12 @@ class Engine:
         providers = self.host.list_tts_providers()
         return str(providers[0]["id"]) if providers else ""
 
-    def provider_for(self, profile: Profile, language: str) -> str:
-        """和文字相同的语言用档案 / 全局的服务；外语用语言对照表里的服务。"""
+    def provider_for(self, profile: Profile, language: str, emotion: str = "") -> str:
+        """外语用语言对照表里的服务；和文字相同的语言先看情绪音色，再用档案 / 全局的服务。"""
         if not language:
+            entry = profile.emotion_voice(emotion) if emotion else None
+            if entry and entry["provider_id"]:
+                return entry["provider_id"]
             return self.resolve_provider_id(profile)
         lang = self.settings.language(language)
         if not lang:
@@ -152,8 +188,13 @@ class Engine:
         return None
 
     # ---------- 角色的语音工具 ----------
-    def request_voice(self, *, umo: str, user_text: str, language: str = "", now: float | None = None) -> dict:
-        """角色调用语音工具时的检查。返回给 LLM 的结果；ok 为真时调用方给事件打上标记。"""
+    def request_voice(
+        self, *, umo: str, user_text: str, language: str = "", emotion: str = "", now: float | None = None
+    ) -> dict:
+        """角色调用语音工具时的检查。返回给 LLM 的结果；ok 为真时调用方给事件打上标记。
+
+        情绪写错不拒绝，改为自动判断。
+        """
         settings = self.settings
         profile = settings.resolve_profile(umo)
         now = time.monotonic() if now is None else now
@@ -182,13 +223,14 @@ class Engine:
         last = self.last_tool_at.get(umo)
         if last is not None and profile.tool_interval and now - last < profile.tool_interval:
             return refuse(f"刚用过语音，{profile.tool_interval - (now - last):.0f} 秒后才能再用")
+        mood = normalize_emotion(emotion)
+        note = "本轮回复会以语音发送。正常写出要说的话，不要提到工具或语音合成。"
+        if mood is None:
+            mood = ""
+            note += f"（没有「{emotion.strip()}」这种情绪，将自动判断）"
         self.last_tool_at[umo] = now
         self.counters["tool"] += 1
-        return {
-            "ok": True,
-            "language": code,
-            "note": "本轮回复会以语音发送。正常写出要说的话，不要提到工具或语音合成。",
-        }
+        return {"ok": True, "language": code, "emotion": mood, "note": note}
 
     # ---------- 决策 ----------
     def plan(
@@ -224,16 +266,25 @@ class Engine:
         )
         language = voice_request.get("language", profile.voice_language) if voice_request else profile.voice_language
         source = SOURCE_BY_CODE.get(decision.code, "passive")
+        emotion, emotion_source, _ = guess_emotion(profile, reply_text)
+        requested = (voice_request or {}).get("emotion") or ""
+        if requested and profile.emotion_voices:
+            emotion, emotion_source = requested, "tool"
+        send_mode = effective_send_mode(profile, is_group)
+        if send_mode == "voice_only" and needs_shortening(profile, text):
+            send_mode = "both"  # 念的是缩写版，全文还要用文字发出去
         plan = Plan(
             event_id=next(self._event_ids),
             umo=umo,
             profile=profile,
             text=text,
             decision=decision,
-            send_mode=effective_send_mode(profile, is_group),
+            send_mode=send_mode,
             language=language,
             source=source,
             previous_voice_at=previous,
+            emotion=emotion,
+            emotion_source=emotion_source,
         )
         self.counters["decided"] += 1
         if decision.speak:
@@ -258,6 +309,9 @@ class Engine:
                 "forced": decision.forced,
                 "source": source if decision.speak else "",
                 "language": language if decision.speak else "",
+                "emotion": "",
+                "emotion_source": "",
+                "provider_id": "",
                 "spoken": "",
                 "mode": plan.send_mode if decision.speak else "",
                 "status": "pending" if decision.speak else "skipped",
@@ -275,52 +329,119 @@ class Engine:
                 return
 
     # ---------- 朗读文本 ----------
-    async def prepare(self, profile: Profile, text: str, language: str, umo: str = "") -> Spoken:
-        """LLM 清洗 / 翻译（按需）→ 发音词典 → 选 TTS 服务。"""
+    async def prepare(
+        self,
+        profile: Profile,
+        text: str,
+        language: str,
+        umo: str = "",
+        emotion: str = "",
+        emotion_source: str = "",
+    ) -> Spoken:
+        """LLM 清洗 / 翻译（按需，顺便判断情绪）→ 发音词典 → 按语言和情绪选 TTS 服务。
+
+        emotion / emotion_source 是事先得到的情绪（角色指定、手动选择或符号粗判）；
+        角色和手动指定的不再让模型判断，符号粗判的会被模型的判断覆盖。
+        """
         settings = self.settings
         lang = settings.language(language) if language else None
         if language and not lang:
             raise SpeechError(f"没有配置语言「{language}」")
         entries = merged_pronunciations(profile.pronunciations, settings.pronunciations)
-        spoken, llm_ms, used, note = text, None, False, ""
+        spoken, llm_ms, used, notes = text, None, False, []
         translating = lang is not None
         cleaning = profile.filter_mode == "llm" and len(text) <= MAX_LLM_INPUT
-        if translating or cleaning:
+        # 情绪音色只在念和文字相同的语言时生效
+        voiced = [entry["emotion"] for entry in profile.emotion_voices if entry["provider_id"]]
+        ask_emotion = bool(voiced) and not translating and emotion_source not in FIXED_EMOTION_SOURCES
+        # 太长的回复由 LLM 另写一段短版来念；和清洗 / 翻译 / 情绪判断合并为一次调用。
+        # 原文不长但要翻译时，译文可能变长（中译日约 1.6 倍），把上限作为译文的长度预算交给模型
+        cap = profile.speak_max_chars
+        limit = cap if needs_shortening(profile, text) else 0
+        budget = cap if translating and not limit else 0
+        shortened = False
+        if translating or cleaning or limit:
             started = time.monotonic()
             try:
-                system, prompt = build_prompt(text, lang["name"] if lang else None, entries_for(entries, language))
+                system, prompt = build_prompt(
+                    text, lang["name"] if lang else None, entries_for(entries, language),
+                    voiced if ask_emotion else None, limit, budget,
+                )
                 raw = await asyncio.wait_for(
                     self.host.chat(settings.llm_provider_id, system, prompt, umo), settings.llm_timeout
                 )
-                spoken = clean_output(raw, text, translating=translating)
+                mood = None
+                if ask_emotion:
+                    mood, raw = split_emotion(raw)
+                spoken = clean_output(raw, text, translating=translating, limit=limit)
+                before = speech_length(spoken)
+                cut = bool(cap and (limit or translating)) and before > cap
+                if cut:
+                    spoken = truncate_sentences(spoken, cap)  # 模型没守住上限时截到句末
+                if limit:
+                    shortened = True
+                    notes.append(f"回复 {len(text)} 字，由 LLM 缩写为 {speech_length(spoken)} 字")
+                elif cut:
+                    shortened = True
+                    notes.append(f"译文约 {before} 字，超过朗读上限 {cap} 字，只念前 {speech_length(spoken)} 字")
+                if shortened:
+                    self.counters["shortened"] += 1
+                if mood:
+                    emotion, emotion_source = mood, "llm"
                 used = True
                 if translating:
                     self.counters["translated"] += 1
             except Exception as exc:
                 self.counters["llm_failed"] += 1
                 reason = f"超过 {settings.llm_timeout:g} 秒" if isinstance(exc, asyncio.TimeoutError) else describe_error(exc)
-                if not translating:
-                    note = f"LLM 清洗失败（{reason}），使用正则结果"
-                elif settings.translate_fail == "original":
-                    language, lang = "", None
-                    note = f"翻译失败（{reason}），改念原文"
-                else:
+                if translating and settings.translate_fail != "original":
                     raise SpeechError(f"翻译失败：{reason}") from None
+                if limit:
+                    spoken = truncate_sentences(text, limit)
+                    shortened = True
+                if translating:
+                    language, lang = "", None
+                    notes.append(f"翻译失败（{reason}），改念原文" + (f"前 {len(spoken)} 字" if limit else ""))
+                elif limit:
+                    notes.append(f"LLM 缩写失败（{reason}），改念前 {len(spoken)} 字")
+                else:
+                    notes.append(f"LLM 清洗失败（{reason}），使用正则结果")
             llm_ms = _ms(started)
+        if language or not profile.emotion_voices:
+            emotion, emotion_source = "", ""
         spoken = apply_pronunciations(spoken, entries, language)
         if not spoken:
             raise SpeechError("按发音词典处理后没有可朗读的内容")
-        return Spoken(spoken, language, self.provider_for(profile, language), used, llm_ms, note)
+        provider_id = self.provider_for(profile, language, emotion)
+        entry = profile.emotion_voice(emotion) if emotion and not language else None
+        if entry and entry["provider_id"] and not self._provider_available(entry["provider_id"]):
+            notes.append(f"{emotion_label(emotion)}音色「{entry['provider_id']}」不可用，改用默认声音")
+            provider_id = self.resolve_provider_id(profile)
+        return Spoken(
+            spoken, language, provider_id, used, llm_ms, "；".join(notes), emotion, emotion_source, shortened
+        )
+
+    def _provider_available(self, provider_id: str) -> bool:
+        try:
+            return any(item["id"] == provider_id for item in self.host.list_tts_providers())
+        except Exception:
+            return True  # 查不到列表时照常尝试，失败由合成环节报告
 
     # ---------- 合成 ----------
     async def synthesize(self, plan: Plan) -> str:
         """为决策通过的回复准备文本并合成语音；失败时还原冷却并把原因记进事件。"""
         started = time.monotonic()
         try:
-            spoken = await self.prepare(plan.profile, plan.text, plan.language, plan.umo)
+            spoken = await self.prepare(
+                plan.profile, plan.text, plan.language, plan.umo, plan.emotion, plan.emotion_source
+            )
+            plan.shortened = spoken.shortened
+            if spoken.shortened and plan.send_mode == "voice_only":
+                plan.send_mode = "both"  # 语音不是全文（例如译文太长被截短），文字还要发
             self._update_event(
                 plan.event_id, spoken=_short(spoken.text), language=spoken.language,
-                llm_ms=spoken.llm_ms, detail=spoken.note,
+                llm_ms=spoken.llm_ms, detail=spoken.note, emotion=spoken.emotion,
+                emotion_source=spoken.emotion_source, provider_id=spoken.provider_id, mode=plan.send_mode,
             )
             if not spoken.provider_id:
                 raise LookupError("没有可用的 TTS 服务，请先在 AstrBot 添加并在插件里选择")
@@ -347,11 +468,17 @@ class Engine:
         self._update_event(plan.event_id, **changes)
 
     async def speak_text(
-        self, profile: Profile, text: str, language: str, umo: str = ""
+        self,
+        profile: Profile,
+        text: str,
+        language: str,
+        umo: str = "",
+        emotion: str = "",
+        emotion_source: str = "",
     ) -> tuple[Spoken, str, int]:
         """试听和 /ftts say 用：不经过决策，走清洗 / 翻译 / 词典后直接合成。返回 (内容, 音频路径, 总耗时毫秒)。"""
         started = time.monotonic()
-        spoken = await self.prepare(profile, text, language, umo)
+        spoken = await self.prepare(profile, text, language, umo, emotion, emotion_source)
         if not spoken.provider_id:
             raise LookupError("没有可用的 TTS 服务，请先在 AstrBot 添加并在插件里选择")
         path = await self.scheduler.submit(spoken.provider_id, spoken.text)

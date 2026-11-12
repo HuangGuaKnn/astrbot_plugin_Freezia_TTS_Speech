@@ -233,6 +233,142 @@ class FeatureTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((spoken.text, spoken.provider_id), ("おはよう", "tts_ja"))
         self.assertTrue(Path(path).is_file())
 
+    # ---- 长回复缩写 ----
+    LONG = "博士，今天的作战非常顺利，大家都平安回来了。晚上食堂有庆功宴，记得早点过来，我会给你留位置的。"
+
+    async def test_long_reply_is_shortened_by_llm(self):
+        self.configure(profile={"speak_max_chars": 20})
+        self.host.chat_reply = "博士，作战很顺利，晚上见～"
+        plan = self.plan(reply_text=self.LONG, user_text="说给我听")
+        await self.engine.synthesize(plan)
+        self.assertEqual(self.host.calls[-1], ("tts_a", "博士，作战很顺利，晚上见～"))
+        self.assertIn("不超过 20 字", self.host.chats[-1]["system"])
+        self.assertIn(f"回复 {len(self.LONG)} 字，由 LLM 缩写为 13 字", self.engine.events[0]["detail"])
+        self.assertEqual(self.engine.counters["shortened"], 1)
+
+    async def test_slightly_long_llm_output_is_trimmed_to_sentence(self):
+        self.configure(profile={"speak_max_chars": 20})
+        self.host.chat_reply = "博士，今天的作战很顺利。大家都平安回来了，晚上一起吃饭吧。"
+        spoken = await self.engine.prepare(self.engine.settings.profiles["default"], self.LONG, "")
+        self.assertEqual(spoken.text, "博士，今天的作战很顺利。")
+
+    async def test_shorten_failure_reads_first_sentences(self):
+        self.configure(profile={"speak_max_chars": 20})
+        self.host.chat_error = LookupError("没有可用的对话模型")
+        spoken = await self.engine.prepare(self.engine.settings.profiles["default"], self.LONG, "")
+        # 第一句就有 22 字，超过 20 字上限，于是停在逗号
+        self.assertEqual(spoken.text, "博士，今天的作战非常顺利")
+        self.assertIn("LLM 缩写失败（没有可用的对话模型），改念前 12 字", spoken.note)
+
+    async def test_shorten_with_translation(self):
+        self.configure(profile={"speak_max_chars": 20})
+        self.host.chat_reply = "ドクター、作戦は大成功です。"
+        spoken = await self.engine.prepare(self.engine.settings.profiles["default"], self.LONG, "ja")
+        self.assertEqual((spoken.text, spoken.provider_id), ("ドクター、作戦は大成功です。", "tts_ja"))
+        system = self.host.chats[-1]["system"]
+        self.assertIn("翻译成日语", system)
+        self.assertIn("不超过 20 字", system)
+
+    async def test_long_translation_is_cut_to_limit(self):
+        self.configure(profile={"speak_max_chars": 30})
+        profile = self.engine.settings.profiles["default"]
+        self.host.chat_reply = "ドクター！やっと戻られたんですね！今日の作戦は本当に順調でした。今夜は食堂で祝賀会が開かれます。"
+        spoken = await self.engine.prepare(profile, "博士，欢迎回来。今天的作战很顺利，晚上有庆功宴。", "ja")
+        self.assertIn("长度不超过 30 个字", self.host.chats[-1]["system"])
+        self.assertEqual(spoken.text, "ドクター！やっと戻られたんですね！")
+        self.assertTrue(spoken.shortened)
+        self.assertIn("译文约 48 字，超过朗读上限 30 字，只念前 17 字", spoken.note)
+        self.host.chat_reply = "おやすみ～"
+        spoken = await self.engine.prepare(profile, "晚安～", "ja")
+        self.assertEqual((spoken.text, spoken.shortened, spoken.note), ("おやすみ～", False, ""))
+
+    async def test_voice_only_switches_to_both_when_translation_cut(self):
+        self.configure(profile={"speak_max_chars": 10, "send_mode": "voice_only", "voice_language": "ja"})
+        self.host.chat_reply = "ドクター！やっと戻られたんですね！今日の作戦は本当に順調でした。"
+        plan = self.plan(reply_text="博士，欢迎回来。", user_text="说给我听")
+        self.assertEqual(plan.send_mode, "voice_only")  # 合成前看不出译文会变长
+        await self.engine.synthesize(plan)
+        self.assertEqual((plan.send_mode, plan.shortened), ("both", True))
+        self.assertEqual(self.engine.events[0]["mode"], "both")
+
+    async def test_zero_limit_reads_full_text(self):
+        self.configure(profile={"speak_max_chars": 0})
+        spoken = await self.engine.prepare(self.engine.settings.profiles["default"], self.LONG, "")
+        self.assertEqual(spoken.text, self.LONG)
+        self.assertEqual(self.host.chats, [])
+
+    def test_voice_only_becomes_both_when_shortened(self):
+        self.configure(profile={"speak_max_chars": 20, "send_mode": "voice_only"})
+        self.assertEqual(self.plan(reply_text=self.LONG, user_text="说给我听").send_mode, "both")
+        short = self.plan(reply_text="晚安～", user_text="说给我听", umo="qq:FriendMessage:2")
+        self.assertEqual(short.send_mode, "voice_only")
+
+    # ---- 情绪音色 ----
+    EMOTION_VOICES = [
+        {"emotion": "happy", "provider_id": "tts_b", "markers": ["哈哈", "好耶"]},
+        {"emotion": "sad", "provider_id": "tts_sad", "markers": ["呜"]},
+    ]
+
+    def emotion_profile(self, **changes):
+        self.configure(profile={"emotion_voices": self.EMOTION_VOICES, **changes})
+        return self.engine.settings.profiles["default"]
+
+    async def test_emotion_markers_pick_provider(self):
+        self.emotion_profile()
+        plan = self.plan(reply_text="好耶，出发！", user_text="说给我听")
+        self.assertEqual((plan.emotion, plan.emotion_source), ("happy", "marker"))
+        await self.engine.synthesize(plan)
+        self.assertEqual(self.host.calls[-1][0], "tts_b")
+        event = self.engine.events[0]
+        self.assertEqual((event["emotion"], event["emotion_source"], event["provider_id"]), ("happy", "marker", "tts_b"))
+        plain = self.plan(reply_text="好的", user_text="说给我听", umo="qq:FriendMessage:2")
+        await self.engine.synthesize(plain)
+        self.assertEqual(self.host.calls[-1][0], "tts_a")
+        self.assertEqual(self.engine.events[0]["emotion"], "")
+
+    async def test_unavailable_emotion_provider_falls_back(self):
+        profile = self.emotion_profile()  # tts_sad 不在 AstrBot 的服务列表里
+        spoken = await self.engine.prepare(profile, "呜……", "", emotion="sad", emotion_source="marker")
+        self.assertEqual((spoken.provider_id, spoken.emotion), ("tts_a", "sad"))
+        self.assertIn("难过音色「tts_sad」不可用", spoken.note)
+
+    def test_tool_emotion(self):
+        self.emotion_profile()
+        self.assertEqual(self.engine.request_voice(umo=self.UMO, user_text="", emotion="难过", now=100.0)["emotion"], "sad")
+        odd = self.engine.request_voice(umo="qq:FriendMessage:2", user_text="", emotion="激动")
+        self.assertEqual((odd["ok"], odd["emotion"]), (True, ""))
+        self.assertIn("自动判断", odd["note"])
+        plan = self.plan(reply_text="哈哈", voice_request={"language": "", "emotion": "sad"})
+        self.assertEqual((plan.emotion, plan.emotion_source), ("sad", "tool"))
+
+    def test_no_emotion_voices_means_no_emotion(self):
+        plan = self.plan(reply_text="哈哈", voice_request={"language": "", "emotion": "happy"})
+        self.assertEqual((plan.emotion, plan.emotion_source), ("", ""))
+
+    async def test_llm_judges_emotion(self):
+        self.host.providers.append("tts_sad")
+        profile = self.emotion_profile(filter_mode="llm")
+        self.host.chat_reply = "[sad]哈哈，没事的"
+        spoken = await self.engine.prepare(profile, "哈哈，没事的", "", emotion="happy", emotion_source="marker")
+        self.assertEqual((spoken.emotion, spoken.emotion_source, spoken.provider_id, spoken.text),
+                         ("sad", "llm", "tts_sad", "哈哈，没事的"))
+        self.assertIn("happy（开心）、sad（难过）", self.host.chats[-1]["system"])
+        # 模型没标情绪 → 保留符号粗判
+        self.host.chat_reply = "哈哈，没事的"
+        spoken = await self.engine.prepare(profile, "哈哈，没事的", "", emotion="happy", emotion_source="marker")
+        self.assertEqual((spoken.emotion, spoken.emotion_source), ("happy", "marker"))
+        # 角色指定的情绪不再让模型判断
+        spoken = await self.engine.prepare(profile, "哈哈，没事的", "", emotion="sad", emotion_source="tool")
+        self.assertNotIn("情绪代码", self.host.chats[-1]["system"])
+        self.assertEqual((spoken.emotion, spoken.provider_id), ("sad", "tts_sad"))
+
+    async def test_foreign_language_ignores_emotion(self):
+        profile = self.emotion_profile()
+        self.host.chat_reply = "やった"
+        spoken = await self.engine.prepare(profile, "好耶", "ja", emotion="happy", emotion_source="marker")
+        self.assertEqual((spoken.provider_id, spoken.emotion), ("tts_ja", ""))
+        self.assertNotIn("情绪代码", self.host.chats[-1]["system"])
+
 
 class WebApiTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -296,6 +432,33 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["llm_used"])
         self.assertIsNotNone(result["llm_ms"])
 
+    async def test_preview_marks_shortening(self):
+        await self.call("POST", "profiles/save", {"original": "default", "profile": {
+            "name": "default", "speak_max_chars": 10, "send_mode": "voice_only"}})
+        result = await self.call("POST", "preview", {"text": "博士，今天的作战非常顺利，大家都平安回来了。", "user_text": "说给我听"})
+        self.assertEqual((result["will_shorten"], result["speak_max_chars"], result["uses_llm"], result["send_mode"]),
+                         (True, 10, True, "both"))
+        result = await self.call("POST", "preview", {"text": "晚安", "user_text": "说给我听"})
+        self.assertEqual((result["will_shorten"], result["uses_llm"], result["send_mode"]), (False, False, "voice_only"))
+
+    async def test_emotion_preview_and_synthesize(self):
+        state = await self.call("GET", "state")
+        self.assertIn({"code": "happy", "name": "开心"}, state["emotions"])
+        voices = [{"emotion": "happy", "provider_id": "tts_b", "markers": ["哈哈"]}]
+        await self.call("POST", "profiles/save", {"original": "default", "profile": {"name": "default", "emotion_voices": voices}})
+        result = await self.call("POST", "preview", {"text": "（笑）哈哈，好呀"})
+        self.assertEqual((result["emotion"], result["emotion_source"], result["emotion_marker"], result["voice_provider"]),
+                         ("happy", "marker", "哈哈", "tts_b"))
+        self.assertTrue(result["emotion_voices"])
+        self.assertFalse(result["llm_emotion"])
+        result = await self.call("POST", "preview", {"text": "哈哈", "emotion": "neutral"})
+        self.assertEqual((result["emotion"], result["emotion_source"], result["voice_provider"]), ("neutral", "manual", "tts_a"))
+        with self.assertRaises(ValueError):
+            await self.call("POST", "preview", {"text": "哈哈", "emotion": "激动"})
+        result = await self.call("POST", "synthesize", {"text": "好呀", "emotion": "开心"})
+        self.assertEqual((result["provider_id"], result["emotion"], result["emotion_name"], result["emotion_source"]),
+                         ("tts_b", "happy", "开心", "manual"))
+
     async def test_synthesize_returns_data_url(self):
         result = await self.call("POST", "synthesize", {"text": "*挥手* 你好"})
         self.assertEqual(result["text"], "你好")
@@ -351,7 +514,13 @@ class SettingsTest(unittest.TestCase):
             "translate_fail": "explode",
             "llm_timeout": 999,
             "profiles": {"default": {"voice_language": "?", "emotion_boost": 0.1, "filter_mode": "llm",
-                                     "tool_interval": -5}},
+                                     "tool_interval": -5, "emotion_voices": [
+                                         {"emotion": "happy", "provider_id": "genie_happy", "markers": "哈哈，嘿嘿"},
+                                         {"emotion": "happy", "provider_id": "重复"},
+                                         {"emotion": "excited", "provider_id": "不认识"},
+                                         {"emotion": "sad"},
+                                         "not a dict",
+                                     ]}},
         })
         self.assertEqual([lang["code"] for lang in settings.voice_languages], ["ja"])
         self.assertEqual([(p["from"], p["lang"]) for p in settings.pronunciations],
@@ -360,11 +529,16 @@ class SettingsTest(unittest.TestCase):
         profile = settings.profiles["default"]
         self.assertEqual((profile.voice_language, profile.emotion_boost, profile.filter_mode, profile.tool_interval),
                          ("", 1.0, "llm", 0))
+        self.assertEqual(profile.emotion_voices, [
+            {"emotion": "happy", "provider_id": "genie_happy", "markers": ["哈哈", "嘿嘿"]},
+            {"emotion": "sad", "provider_id": "", "markers": []},
+        ])
 
     def test_old_settings_get_new_defaults(self):
         settings = Settings.from_dict({"profiles": {"default": {"probability": 0.3}}})
         profile = settings.profiles["default"]
         self.assertEqual((profile.tool_enabled, profile.voice_to_voice, profile.emotion_boost), (True, True, 1.5))
+        self.assertEqual(profile.emotion_voices, [])
         self.assertEqual((settings.voice_languages, settings.translate_fail), ([], "skip"))
 
     def test_roundtrip(self):

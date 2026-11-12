@@ -14,13 +14,14 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 from .core import PLUGIN_NAME, VERSION
-from .core.engine import Engine, Plan, describe_error, filter_text
+from .core.engine import Engine, Plan, describe_error, emotion_label, filter_text, guess_emotion
 from .core.webapi import GET_ROUTES, POST_ROUTES, dispatch
 
 PAGE_PREFIX = f"/{PLUGIN_NAME}/page"
 STREAMING_WARN_INTERVAL = 600
 MODE_LABELS = {"both": "文字+语音", "voice_only": "仅语音", "text_only": "仅文字"}
 VOICE_REQUEST_KEY = f"{PLUGIN_NAME}:voice_request"
+PENDING_VOICE_KEY = f"{PLUGIN_NAME}:pending_voice"
 _SAY_PREFIX = re.compile(r"^\s*[/!！]?ftts\s+say\b\s*", re.I)
 
 
@@ -79,6 +80,21 @@ class AstrBotHost:
             "callback_api_base": bool(str(config.get("callback_api_base") or "").strip()),
             "page_api": callable(getattr(self.context, "register_web_api", None)),
         }
+
+
+def user_sent_voice(event: AstrMessageEvent) -> bool:
+    """用户这条消息是不是语音。
+
+    AstrBot 开启语音转文字后，预处理阶段（早于所有插件钩子）会把消息链里的语音换成识别出的文字，
+    所以还要看平台的原始消息：aiocqhttp（OneBot 数组格式）里是 type 为 record 的消息段。
+    """
+    if any(isinstance(comp, Comp.Record) for comp in (event.get_messages() or [])):
+        return True
+    raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+    segments = raw.get("message") if isinstance(raw, dict) else None
+    if isinstance(segments, list):
+        return any(isinstance(seg, dict) and seg.get("type") == "record" for seg in segments)
+    return False
 
 
 def _web_adapter():
@@ -189,7 +205,7 @@ class FreeziaTTS(Star):
             user_text=event.message_str or "",
             is_group=not event.is_private_chat(),
             voice_request=event.get_extra(VOICE_REQUEST_KEY),
-            user_voice=any(isinstance(comp, Comp.Record) for comp in (event.get_messages() or [])),
+            user_voice=user_sent_voice(event),
         )
         if self.engine.settings.debug:
             logger.info(f"[Freezia TTS] {plan.umo} · {plan.profile.name} · {plan.decision.reason}")
@@ -202,6 +218,11 @@ class FreeziaTTS(Star):
                 record = await self._record(path)
             except Exception as exc:
                 logger.warning(f"[Freezia TTS] 合成失败，改发文字：{describe_error(exc)}")
+                return
+            if plan.send_mode != "voice_only":
+                # 语音被缩短（例如译文太长），不能替换掉全文：文字照发，语音等文字发出后再补发。
+                # QQ 不支持语音和文字放在同一条消息里，所以不往消息链里加。
+                event.set_extra(PENDING_VOICE_KEY, (plan, record))
                 return
             chain, placed = [], False
             for comp in result.chain:
@@ -230,6 +251,15 @@ class FreeziaTTS(Star):
             return
         try:
             record = await self._record(path)
+        except Exception as exc:
+            self.engine.mark_failed(plan, f"发送失败：{describe_error(exc)}")
+            logger.warning(f"[Freezia TTS] 语音发送失败：{describe_error(exc)}")
+            return
+        await self._deliver(plan, record)
+
+    async def _deliver(self, plan: Plan, record: Comp.Record) -> None:
+        """单独发一条语音消息。"""
+        try:
             sent = await self.context.send_message(plan.umo, MessageChain(chain=[record]))
             if sent is False:
                 raise RuntimeError("找不到会话对应的平台")
@@ -240,6 +270,18 @@ class FreeziaTTS(Star):
             logger.warning(f"[Freezia TTS] 语音发送失败：{describe_error(exc)}")
             return
         self.engine.mark_sent(plan)
+
+    @filter.after_message_sent()
+    async def after_message_sent(self, event: AstrMessageEvent):
+        """「仅语音」遇到语音被缩短时，文字发出后再补发语音。"""
+        pending = event.get_extra(PENDING_VOICE_KEY)
+        if not pending:
+            return
+        event.set_extra(PENDING_VOICE_KEY, None)
+        try:
+            await self._deliver(*pending)
+        except Exception:
+            logger.error(f"[Freezia TTS] 补发语音时出错：{traceback.format_exc()}")
 
     async def _record(self, path: str) -> Comp.Record:
         url = None
@@ -262,17 +304,18 @@ class FreeziaTTS(Star):
 
     # ---------- 角色可调用的工具 ----------
     @filter.llm_tool(name="freezia_voice_reply")
-    async def freezia_voice_reply(self, event: AstrMessageEvent, language: str = ""):
+    async def freezia_voice_reply(self, event: AstrMessageEvent, language: str = "", emotion: str = ""):
         """想用声音说出本轮回复时调用：情绪强烈、亲密或安慰的时刻，用户想听你的声音，或念诗、唱歌时。普通闲聊不要调用，不要每轮都用。调用后正常写出要说的话，不要提到工具或语音合成。
 
         Args:
             language (string): 语音的语言代码或名称，例如 ja、en、日语；留空表示和文字相同。只有已配置的语言可用。
+            emotion (string): 说这句话的语气：happy 开心、sad 难过、angry 生气、surprised 惊讶、shy 害羞、gentle 温柔、neutral 平静；留空自动判断。
         """
         result = self.engine.request_voice(
-            umo=event.unified_msg_origin, user_text=event.message_str or "", language=language
+            umo=event.unified_msg_origin, user_text=event.message_str or "", language=language, emotion=emotion
         )
         if result.get("ok"):
-            event.set_extra(VOICE_REQUEST_KEY, {"language": result["language"]})
+            event.set_extra(VOICE_REQUEST_KEY, {"language": result["language"], "emotion": result["emotion"]})
         if self.engine.settings.debug:
             logger.info(f"[Freezia TTS] 角色调用语音工具：{result}")
         return json.dumps(result, ensure_ascii=False)
@@ -282,6 +325,13 @@ class FreeziaTTS(Star):
             return "和文字相同"
         lang = self.engine.settings.language(code)
         return f"{lang['name']}（{code}）" if lang else f"{code}（未配置）"
+
+    @staticmethod
+    def _emotion_summary(profile) -> str:
+        voiced = [entry for entry in profile.emotion_voices if entry["provider_id"]]
+        if not voiced:
+            return "未配置"
+        return "、".join(f"{emotion_label(entry['emotion'])} → {entry['provider_id']}" for entry in voiced)
 
     # ---------- 指令 ----------
     @filter.command_group("ftts")
@@ -300,9 +350,11 @@ class FreeziaTTS(Star):
             f"插件：{'开启' if settings.enabled else '关闭'}",
             f"本会话：{'静音' if settings.is_muted(umo) else '正常'}",
             f"档案：{profile.name}（概率 {profile.probability:.0%}，被动上限 {profile.max_chars} 字，"
+            f"朗读上限 {f'{profile.speak_max_chars} 字' if profile.speak_max_chars else '不限'}，"
             f"{MODE_LABELS.get(profile.send_mode, profile.send_mode)}）",
             f"TTS 服务：{provider_id}",
             f"语音语言：{self._language_label(profile.voice_language)}",
+            f"情绪音色：{self._emotion_summary(profile)}",
             f"角色主动语音：{'允许' if profile.tool_enabled else '关闭'}",
             f"会话 ID：{umo}",
         ]
@@ -344,14 +396,16 @@ class FreeziaTTS(Star):
         if not cleaned:
             yield event.plain_result("过滤后没有可朗读的内容。")
             return
+        emotion, emotion_source, _ = guess_emotion(profile, text)
         try:
             spoken, path, elapsed = await self.engine.speak_text(
-                profile, cleaned, profile.voice_language, event.unified_msg_origin
+                profile, cleaned, profile.voice_language, event.unified_msg_origin, emotion, emotion_source
             )
             record = await self._record(path)
         except Exception as exc:
             yield event.plain_result(f"合成失败：{describe_error(exc)}")
             return
         if settings.debug:
-            logger.info(f"[Freezia TTS] /ftts say 合成耗时 {elapsed} ms，朗读：{spoken.text}")
+            mood = f"，情绪：{emotion_label(spoken.emotion)}" if spoken.emotion else ""
+            logger.info(f"[Freezia TTS] /ftts say 合成耗时 {elapsed} ms，服务 {spoken.provider_id}{mood}，朗读：{spoken.text}")
         yield event.chain_result([record])

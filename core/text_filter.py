@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import re
 
-# 这些符号虽然落在 emoji/符号区段，但属于角色语气，保留在文本里。
-# 它们大多不发音，最终效果以实际 TTS 听感为准。
-KEEP_SYMBOLS = frozenset("♡♥～~")
+# ♡♥ 和其他符号一样去掉：实测 GPT-SoVITS 不读它们，只多一小段停顿；
+# 而且不在 GBK 里，中文 Windows 上以后台方式运行的 GPT-SoVITS 打印日志时会因此合成失败。
+# 情绪判断用的是过滤前的原文，不受影响。～ 和 ~ 不在符号区段，照常保留。
 
 _CODE_BLOCK = re.compile(r"```.*?(?:```|\Z)", re.S)
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
@@ -56,7 +56,7 @@ _EMOJI = re.compile(
     "←-⇿"  # 箭头
     "⌀-⏿"  # 技术符号（⌚⏰ 等）
     "■-◿"  # 几何形状
-    "☀-➿"  # 杂项符号与装饰符号（♡♥ 在此区段，单独放行）
+    "☀-➿"  # 杂项符号与装饰符号（含 ♡♥♪）
     "⬀-⯿"  # 星星、箭头
     "︎️‍⃣"  # 变体选择符、零宽连接符、键帽
     "\U000E0020-\U000E007F"  # 旗帜标签字符
@@ -70,11 +70,6 @@ _DUP_PUNCT = re.compile(r"([，,、；;：:])[，,、；;：:\s]*")
 _PAUSE_BEFORE_END = re.compile(r"[，,、；;：:]+(?=[。！？!?…])")
 _LEADING_PUNCT = re.compile(r"^[，,、；;：:。.！!？?\s]+")
 _SPEAKABLE = re.compile(r"[0-9A-Za-z一-鿿぀-ヿ가-힯]")
-
-
-def _drop_emoji(match: re.Match[str]) -> str:
-    char = match.group()
-    return char if char in KEEP_SYMBOLS else ""
 
 
 def _strip_brackets(text: str) -> str:
@@ -125,7 +120,7 @@ def clean_for_tts(text: str) -> str:
     text = _KAOMOJI.sub("", text)
     text = _ASCII_KAOMOJI.sub("", text)
     text = _strip_brackets(text)
-    text = _EMOJI.sub(_drop_emoji, text)
+    text = _EMOJI.sub("", text)
     text = _STRAY_BRACKETS.sub("", text)
     text = _tidy(text)
     return text if _SPEAKABLE.search(text) else ""

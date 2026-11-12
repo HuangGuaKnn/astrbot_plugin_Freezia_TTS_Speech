@@ -10,8 +10,9 @@ from typing import Any
 
 from . import VERSION
 from .decide import decide, effective_probability, effective_send_mode, find_emotion
-from .engine import Engine, describe_error, filter_text
-from .settings import Profile, Settings
+from .engine import Engine, describe_error, emotion_label, filter_text, guess_emotion, needs_shortening
+from .settings import EMOTIONS, Profile, Settings
+from .speech import normalize_emotion
 
 GET_ROUTES = ("state",)
 POST_ROUTES = ("settings", "profiles/save", "profiles/delete", "preview", "synthesize")
@@ -76,6 +77,7 @@ def state(engine: Engine) -> dict[str, Any]:
     default_profile = settings.profiles[settings.default_profile]
     return {
         "version": VERSION,
+        "emotions": [{"code": code, "name": name} for code, name in EMOTIONS.items()],
         "settings": settings.to_dict(),
         "providers": providers,
         "chat_providers": chat_providers,
@@ -153,6 +155,16 @@ def _pick_language(engine: Engine, profile: Profile, value: Any) -> str:
     return code
 
 
+def _pick_emotion(profile: Profile, value: Any, raw_text: str) -> tuple[str, str, str]:
+    """页面传来的情绪：空表示自动（按符号粗判，合成时可能由 LLM 判断）；其余为手动指定。"""
+    code = normalize_emotion(str(value or ""))
+    if code is None:
+        raise ValueError(f"没有「{value}」这种情绪")
+    if code and profile.emotion_voices:
+        return code, "manual", ""
+    return guess_emotion(profile, raw_text)
+
+
 def preview(engine: Engine, body: dict) -> dict[str, Any]:
     """试算过滤结果和判定路径。不计冷却，概率只说明会不会进入概率判定；不调用 LLM。"""
     profile = _pick_profile(engine, body.get("profile"))
@@ -180,15 +192,35 @@ def preview(engine: Engine, body: dict) -> dict[str, Any]:
         result["reason"] = "概率为 0，被动触发不会出声"
     language = _pick_language(engine, profile, body.get("language"))
     lang = engine.settings.language(language) if language else None
+    mood, mood_source, marker = ("", "", "") if lang else _pick_emotion(profile, body.get("emotion"), text)
+    voiced = any(entry["provider_id"] for entry in profile.emotion_voices)
+    try:
+        voice_provider = engine.provider_for(profile, language, mood)
+    except LookupError:
+        voice_provider = ""
+    will_shorten = needs_shortening(profile, filtered)
+    send_mode = effective_send_mode(profile, is_group)
+    if send_mode == "voice_only" and will_shorten:
+        send_mode = "both"
     return {
         "profile": profile.name,
         "filtered": filtered,
         "chars": len(filtered),
         "max_chars": profile.max_chars,
-        "send_mode": effective_send_mode(profile, is_group),
+        "speak_max_chars": profile.speak_max_chars,
+        "will_shorten": will_shorten,
+        "send_mode": send_mode,
         "language": language,
         "language_name": lang["name"] if lang else "",
-        "uses_llm": bool(lang) or profile.filter_mode == "llm",
+        "uses_llm": bool(lang) or profile.filter_mode == "llm" or will_shorten,
+        "emotion": mood,
+        "emotion_name": emotion_label(mood) if mood else "",
+        "emotion_source": mood_source,
+        "emotion_marker": marker,
+        "emotion_voices": voiced,
+        # 合成时会不会由 LLM 判断情绪（覆盖符号粗判）
+        "llm_emotion": voiced and not lang and profile.filter_mode == "llm" and mood_source != "manual",
+        "voice_provider": voice_provider,
         "decision": result,
     }
 
@@ -200,13 +232,15 @@ async def synthesize(engine: Engine, body: dict) -> dict[str, Any]:
     if len(text) > MAX_TEST_CHARS:
         raise ValueError(f"试听文字最多 {MAX_TEST_CHARS} 字")
     profile = _pick_profile(engine, body.get("profile"))
+    raw_text = text
     if body.get("filter", True):
         text = filter_text(profile, text)
         if not text:
             raise ValueError("过滤后没有可朗读的内容")
     language = _pick_language(engine, profile, body.get("language"))
+    mood, mood_source, _ = _pick_emotion(profile, body.get("emotion"), raw_text)
     try:
-        spoken, audio_path, elapsed = await engine.speak_text(profile, text, language)
+        spoken, audio_path, elapsed = await engine.speak_text(profile, text, language, "", mood, mood_source)
     except Exception as exc:
         raise RuntimeError(f"合成失败：{describe_error(exc)}") from exc
     data, mime = await asyncio.to_thread(_read_audio, Path(audio_path))
@@ -215,6 +249,9 @@ async def synthesize(engine: Engine, body: dict) -> dict[str, Any]:
         "text": spoken.text,
         "language": spoken.language,
         "language_name": lang["name"] if lang else "",
+        "emotion": spoken.emotion,
+        "emotion_name": emotion_label(spoken.emotion) if spoken.emotion else "",
+        "emotion_source": spoken.emotion_source,
         "llm_used": spoken.llm_used,
         "llm_ms": spoken.llm_ms,
         "note": spoken.note,

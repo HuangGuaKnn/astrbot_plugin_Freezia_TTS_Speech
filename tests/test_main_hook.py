@@ -58,13 +58,14 @@ class FakeResult:
 
 
 class FakeEvent:
-    def __init__(self, result, message="", umo="aiocqhttp:FriendMessage:1", private=True, components=None):
+    def __init__(self, result, message="", umo="aiocqhttp:FriendMessage:1", private=True, components=None, raw=None):
         self._result = result
         self.message_str = message
         self.unified_msg_origin = umo
         self._private = private
         self._extras = {}
         self._components = components if components is not None else [Plain(message)]
+        self.message_obj = types.SimpleNamespace(message=self._components, raw_message=raw)
 
     def get_result(self):
         return self._result
@@ -165,6 +166,7 @@ def _install_stubs(data_dir: Path):
 
     filter_ns = types.SimpleNamespace(
         on_decorating_result=passthrough,
+        after_message_sent=passthrough,
         command_group=command_group,
         permission_type=passthrough,
         llm_tool=passthrough,
@@ -276,6 +278,19 @@ class MainHookTest(_PluginCase):
         self.assertEqual(self.context.provider.texts, ["主人好呀～"])
         self.assertEqual(self.context.sent, [])
 
+    async def test_long_voice_only_reply_keeps_text_and_speaks_short_version(self):
+        self.set_profile(send_mode="voice_only", speak_max_chars=10)
+        self.context.llm_reply = "博士，晚上见～"
+        long_reply = "博士，今天的作战非常顺利，大家都平安回来了。晚上食堂有庆功宴，记得早点过来。"
+        result = FakeResult([Plain(long_reply)])
+        await self.plugin.on_decorating_result(FakeEvent(result, message="说给我听"))
+        self.assertEqual([c.text for c in result.chain], [long_reply])  # 全文照发
+        await self.drain()
+        self.assertEqual(self.context.provider.texts, ["博士，晚上见～"])
+        self.assertIsInstance(self.context.sent[-1][1].chain[0], Record)
+        self.assertIn("不超过 10 字", self.context.llm_calls[-1]["system"])
+        self.assertEqual(self.plugin.engine.events[0]["mode"], "both")
+
     async def test_voice_only_in_group_becomes_both(self):
         self.set_profile(send_mode="voice_only")
         result = FakeResult([Plain("大家好～")])
@@ -356,7 +371,7 @@ class MainToolTest(_PluginCase):
         event = FakeEvent(FakeResult([Plain("（小声）晚安～")]), message="晚安")
         result = _json.loads(await self.plugin.freezia_voice_reply(event, language="日语"))
         self.assertTrue(result["ok"])
-        self.assertEqual(event.get_extra(self.main.VOICE_REQUEST_KEY), {"language": "ja"})
+        self.assertEqual(event.get_extra(self.main.VOICE_REQUEST_KEY), {"language": "ja", "emotion": ""})
         self.context.llm_reply = "おやすみ～"
         await self.plugin.on_decorating_result(event)
         await self.drain()
@@ -383,6 +398,48 @@ class MainToolTest(_PluginCase):
         await self.drain()
         self.assertEqual(self.context.provider.texts, ["收到你的语音啦"])
         self.assertEqual(self.plugin.engine.events[0]["source"], "voice")
+
+    async def test_voice_detected_after_stt_replaced_record(self):
+        # AstrBot 开了语音转文字时，消息链里的语音已被换成文字，只剩平台原始消息里的 record 段
+        raw = {"message": [{"type": "record", "data": {"file": "in.amr"}}]}
+        event = FakeEvent(FakeResult([Plain("听到啦")]), message="你好呀", components=[Plain("你好呀")], raw=raw)
+        self.assertTrue(self.main.user_sent_voice(event))
+        await self.plugin.on_decorating_result(event)
+        await self.drain()
+        self.assertEqual(self.plugin.engine.events[0]["source"], "voice")
+        text_only = FakeEvent(FakeResult([Plain("好")]), message="你好", raw={"message": [{"type": "text", "data": {}}]})
+        self.assertFalse(self.main.user_sent_voice(text_only))
+        self.assertFalse(self.main.user_sent_voice(FakeEvent(FakeResult([Plain("好")]), raw="not a dict")))
+
+    async def test_tool_emotion_picks_emotion_voice(self):
+        import json as _json
+
+        self.context.extra_tts.append(FakeProvider(self.root, pid="genie_sad"))
+        self.set_profile(emotion_voices=[{"emotion": "sad", "provider_id": "genie_sad", "markers": ["呜"]}])
+        event = FakeEvent(FakeResult([Plain("没关系的，我在")]), message="我好难过")
+        result = _json.loads(await self.plugin.freezia_voice_reply(event, emotion="难过"))
+        self.assertEqual((result["ok"], result["emotion"]), (True, "sad"))
+        await self.plugin.on_decorating_result(event)
+        await self.drain()
+        self.assertEqual(self.context.extra_tts[-1].texts, ["没关系的，我在"])
+        record = self.plugin.engine.events[0]
+        self.assertEqual((record["emotion"], record["emotion_source"], record["provider_id"]), ("sad", "tool", "genie_sad"))
+
+    async def test_voice_only_cut_translation_keeps_text_and_sends_after(self):
+        self.set_profile(send_mode="voice_only", voice_language="ja", speak_max_chars=10, probability=0.0,
+                         cooldown=0, tool_interval=0)
+        self.context.llm_reply = "ドクター！やっと戻られたんですね！今日の作戦は本当に順調でした。"
+        result = FakeResult([Plain("博士，欢迎回来。")])
+        event = FakeEvent(result, message="说给我听")
+        await self.plugin.on_decorating_result(event)
+        self.assertEqual([c.text for c in result.chain], ["博士，欢迎回来。"])  # 文字没被替换
+        self.assertEqual(self.context.sent, [])  # 文字发出之前不发语音
+        await self.plugin.after_message_sent(event)
+        self.assertIsInstance(self.context.sent[-1][1].chain[0], Record)
+        self.assertEqual(self.context.extra_tts[0].texts, ["ドクター！"])
+        self.assertEqual(self.plugin.engine.events[0]["status"], "sent")
+        await self.plugin.after_message_sent(event)  # 只补发一次
+        self.assertEqual(len(self.context.sent), 1)
 
     async def test_translation_failure_skips_voice_by_default(self):
         self.context.llm_fail = True

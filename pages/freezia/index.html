@@ -181,6 +181,9 @@
               <label class="seg-card"><input type="radio" name="send_mode" value="text_only"><span><strong><svg class="i"><use href="#i-mute"/></svg>仅文字</strong><small>使用这个档案的会话不发声</small></span></label>
             </div>
             <label class="toggle-row"><span><strong>群聊里「仅语音」改为文字 + 语音</strong><small>只发语音容易让群友以为没有回应</small></span><span class="switch"><input type="checkbox" name="group_force_both" role="switch"><span class="track"></span></span></label>
+            <div class="fields two">
+              <label class="field"><span class="label">朗读字数上限</span><span class="input-unit"><input type="number" name="speak_max_chars" min="0" max="2000"><em>字</em></span><small class="help">超过时由 LLM 另写一段这么长的短版来念（外语按译文长度算），文字照发全文；失败时念前几句。0 为不限制</small></label>
+            </div>
             <div class="field"><span class="label">文本过滤</span>
               <div class="seg" role="radiogroup" aria-label="文本过滤">
                 <label><input type="radio" name="filter_mode" value="regex"><span>正则剥离</span></label>
@@ -199,6 +202,13 @@
               <label class="field"><span class="label">语音语言</span><select name="voice_language"></select><small class="help">选外语时先翻译再合成；语言在「会话与全局」里配置</small></label>
             </div>
             <label class="toggle-row"><span><strong>收到语音时用语音回复</strong><small>用户发来语音消息时，这一轮的回复一定念出来</small></span><span class="switch"><input type="checkbox" name="voice_to_voice" role="switch"><span class="track"></span></span></label>
+          </fieldset>
+
+          <fieldset class="section">
+            <legend>情绪音色</legend>
+            <p class="help section-lead">在 AstrBot 里为同一个角色多建几个 TTS 条目，各用一段开心、难过、撒娇的参考音频，再在这里把情绪和条目对应起来。没判断出情绪、没配这种情绪或念外语时，用上面「基本」里的 TTS 服务。</p>
+            <div class="emo" id="emotion-editor"></div>
+            <small class="help">情绪按顺序判断：角色调用工具时指定 → 开启 LLM 清洗时由模型判断 → 回复里的符号（在过滤前的原文里查找，次数多的胜出）。Genie TTS 的每个条目要用不同的角色名，否则参考音频会互相覆盖。</small>
           </fieldset>
 
           <fieldset class="section">
@@ -315,11 +325,12 @@
           </div>
           <div class="fields two">
             <label class="field"><span class="label">语音语言</span><select name="language"></select></label>
-            <div class="field"><span class="label">模拟</span>
-              <div class="chip-toggles">
-                <label class="chip-toggle"><input type="checkbox" name="simulate_tool"><span>角色调用工具</span></label>
-                <label class="chip-toggle"><input type="checkbox" name="simulate_voice"><span>用户发来语音</span></label>
-              </div>
+            <label class="field"><span class="label">情绪</span><select name="emotion"></select></label>
+          </div>
+          <div class="field"><span class="label">模拟</span>
+            <div class="chip-toggles">
+              <label class="chip-toggle"><input type="checkbox" name="simulate_tool"><span>角色调用工具</span></label>
+              <label class="chip-toggle"><input type="checkbox" name="simulate_voice"><span>用户发来语音</span></label>
             </div>
           </div>
           <div class="actions">
@@ -347,6 +358,7 @@
             <div class="diff" id="diff"></div>
             <div class="spoken" id="spoken-box"><span class="spoken-label" id="spoken-label">实际朗读</span><p id="spoken"></p><small class="spoken-note" id="spoken-note" hidden></small></div>
             <div class="meter" id="meter"><div class="meter-bar"><span id="meter-fill"></span></div><small id="meter-label"></small></div>
+            <div class="mood-line" id="mood-line" hidden></div>
           </article>
 
           <article class="card" id="trace-card" hidden>

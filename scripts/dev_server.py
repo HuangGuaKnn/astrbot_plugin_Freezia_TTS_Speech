@@ -50,6 +50,8 @@ class FakeHost:
     def list_tts_providers(self):
         return [
             {"id": "fake_genie", "type": "dev"},
+            {"id": "fake_genie_happy", "type": "dev"},
+            {"id": "fake_genie_sad", "type": "dev"},
             {"id": "fake_genie_ja", "type": "dev"},
             {"id": "fake_slow", "type": "dev"},
         ]
@@ -58,10 +60,17 @@ class FakeHost:
         return [{"id": "fake_chat", "type": "dev"}]
 
     async def chat(self, provider_id: str, system_prompt: str, prompt: str, umo: str = "") -> str:
-        """假的对话模型：翻译时在前面标上目标语言，清洗时原样返回。"""
+        """假的对话模型：翻译时在前面标上目标语言，清洗时原样返回；要求标情绪时按语气词粗判。"""
         await asyncio.sleep(0.3)
         match = re.search(r"翻译成(\S+?)。", system_prompt)
-        return f"〔{match.group(1)}〕{prompt}" if match else prompt
+        shorten = re.search(r"不超过 (\d+) 字", system_prompt)
+        if shorten:  # 假装缩写：取开头一段
+            prompt = prompt[: max(4, int(shorten.group(1)) - 6)] + "……"
+        text = f"〔{match.group(1)}〕{prompt}" if match else prompt
+        if "情绪代码" in system_prompt:
+            mood = "sad" if "呜" in prompt else "happy" if re.search(r"[！!哈]", prompt) else "neutral"
+            text = f"[{mood}]{text}"
+        return text
 
     async def synthesize(self, provider_id: str, text: str) -> str:
         if provider_id == "fake_slow":
@@ -103,6 +112,11 @@ async def seed_demo(engine: Engine) -> None:
         data = engine.settings.to_dict()
         data["voice_languages"] = [{"code": "ja", "name": "日语", "provider_id": "fake_genie_ja"}]
         data["pronunciations"] = [{"from": "Freezia", "to": "芙蕾齐娅", "lang": ""}]
+        default = data["profiles"][data["default_profile"]]
+        default["emotion_voices"] = [
+            {"emotion": "happy", "provider_id": "fake_genie_happy", "markers": ["哈哈", "嘿嘿", "好耶"]},
+            {"emotion": "sad", "provider_id": "fake_genie_sad", "markers": ["呜", "难过", "哭"]},
+        ]
         engine.save_settings(Settings.from_dict(data))
     request = engine.request_voice(umo="aiocqhttp:FriendMessage:10006", user_text="晚安", language="ja")
     plan = engine.plan(umo="aiocqhttp:FriendMessage:10006", reply_text="（小声）晚安，做个好梦～",
@@ -128,6 +142,8 @@ async def seed_demo(engine: Engine) -> None:
         ("aiocqhttp:FriendMessage:10003", "收到，我打字回你～", "别出声", False, 0.01),
         ("aiocqhttp:FriendMessage:10004", "🎉🎉", "", False, 0.01),
         ("aiocqhttp:FriendMessage:10005", "早安，今天也要元气满满哦！", "", False, 0.02),
+        ("aiocqhttp:FriendMessage:10008", "（小声哭）呜……你终于回来了", "", False, 0.01),
+        ("aiocqhttp:FriendMessage:10009", "嘿嘿，抓到你偷吃零食了", "", False, 0.01),
     ]
     for umo, reply, user_text, is_group, rand in samples:
         plan = engine.plan(umo=umo, reply_text=reply, user_text=user_text, is_group=is_group, rand=rand)
