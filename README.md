@@ -11,10 +11,11 @@
 > [!IMPORTANT]
 > 本项目大量使用 AI 进行辅助开发。
 
-[![Version](https://img.shields.io/badge/version-0.1.1-B8B4AC)](https://github.com/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech/releases)
-[![AstrBot](https://img.shields.io/badge/AstrBot-%E2%89%A54.24-2F6B4F)](https://github.com/AstrBotDevs/AstrBot)
-[![License](https://img.shields.io/badge/license-see%20LICENSE-8C2F39)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech?style=flat&color=A8792A)](https://github.com/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech/stargazers)
+<a href="https://github.com/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech/releases"><img alt="最新版本" src="https://img.shields.io/github/v/release/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech?label=release&amp;sort=semver&amp;include_prereleases"></a>
+<a href="https://github.com/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech/blob/main/LICENSE"><img alt="许可证" src="https://img.shields.io/github/license/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech?label=license"></a>
+<img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776ab?logo=python&amp;logoColor=white">
+<img alt="AstrBot" src="https://img.shields.io/badge/AstrBot-%E2%89%A5%204.24.0-1f6feb">
+<a href="https://github.com/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech?color=yellow"></a>
 
 ## 文档
 
