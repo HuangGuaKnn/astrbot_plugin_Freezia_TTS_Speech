@@ -14,6 +14,9 @@
 <a href="https://github.com/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech/releases"><img alt="最新版本" src="https://img.shields.io/github/v/release/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech?label=release&amp;sort=semver&amp;include_prereleases"></a>
 <a href="https://github.com/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech/blob/main/LICENSE"><img alt="许可证" src="https://img.shields.io/github/license/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech?label=license"></a>
 <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776ab?logo=python&amp;logoColor=white">
+<img alt="JavaScript" src="https://img.shields.io/badge/JavaScript-f1e05a?logo=javascript&amp;logoColor=black">
+<img alt="CSS" src="https://img.shields.io/badge/CSS-563d7c?logo=css3&amp;logoColor=white">
+<img alt="HTML" src="https://img.shields.io/badge/HTML-e34c26?logo=html5&amp;logoColor=white">
 <img alt="AstrBot" src="https://img.shields.io/badge/AstrBot-%E2%89%A5%204.24.0-1f6feb">
 <a href="https://github.com/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/HuangGuaKnn/astrbot_plugin_Freezia_TTS_Speech?color=yellow"></a>
 
